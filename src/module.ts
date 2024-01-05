@@ -1,7 +1,7 @@
 import { defineNuxtModule, addPlugin, createResolver } from "@nuxt/kit";
 import { type UIConfig } from "@bull-board/api/dist/typings/app";
-import { name, version, configKey, compatibility } from "../package.json";
 import { type RedisOptions } from "bullmq";
+import { name, version, configKey, compatibility } from "../package.json";
 
 export interface ModuleOptions {
   connection: RedisOptions;
