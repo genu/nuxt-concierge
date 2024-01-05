@@ -5,8 +5,11 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
+  '@bull-board/api':
+    specifier: ^5.10.3
+    version: 5.10.3(@bull-board/ui@5.10.3)
   '@nuxt/kit':
-    specifier: ^3.9.0
+    specifier: ^3.9.1
     version: 3.9.1(rollup@3.29.4)
 
 devDependencies:
@@ -20,7 +23,7 @@ devDependencies:
     specifier: ^0.5.5
     version: 0.5.5(@nuxt/kit@3.9.1)(nuxi@3.10.0)(typescript@5.3.3)
   '@nuxt/schema':
-    specifier: ^3.9.0
+    specifier: ^3.9.1
     version: 3.9.1(rollup@3.29.4)
   '@nuxt/test-utils':
     specifier: ^3.9.0
@@ -35,7 +38,7 @@ devDependencies:
     specifier: ^8.56.0
     version: 8.56.0
   nuxt:
-    specifier: ^3.9.0
+    specifier: ^3.9.1
     version: 3.9.1(@types/node@20.10.6)(eslint@8.56.0)(rollup@3.29.4)(typescript@5.3.3)(vite@5.0.11)
   vitest:
     specifier: ^0.33.0
@@ -370,6 +373,21 @@ packages:
       '@babel/helper-string-parser': 7.23.4
       '@babel/helper-validator-identifier': 7.22.20
       to-fast-properties: 2.0.0
+
+  /@bull-board/api@5.10.3(@bull-board/ui@5.10.3):
+    resolution: {integrity: sha512-QdHeAoKnJl+fXWt5o8EhxMOIcVCD89A6bdN9sn2jCyF8pNT2+2vCzhkf2Eb0vmh7JwMivc+pNWEjJdoJ/V65Yw==}
+    peerDependencies:
+      '@bull-board/ui': 5.10.3
+    dependencies:
+      '@bull-board/ui': 5.10.3
+      redis-info: 3.1.0
+    dev: false
+
+  /@bull-board/ui@5.10.3:
+    resolution: {integrity: sha512-UELmoXQUCP+oL81aoXAZsU0AkWwMEg0xl0hzC0YYWEXZ7Pkd+gYgOxhPkKTDlIZqtamJ7K7HgtZ0SIiHjcR/XQ==}
+    dependencies:
+      '@bull-board/api': 5.10.3(@bull-board/ui@5.10.3)
+    dev: false
 
   /@cloudflare/kv-asset-handler@0.3.0:
     resolution: {integrity: sha512-9CB/MKf/wdvbfkUdfrj+OkEwZ5b7rws0eogJ4293h+7b6KX5toPwym+VQKmILafNB9YiehqY0DlNrDcDhdWHSQ==}
@@ -1465,6 +1483,7 @@ packages:
     dependencies:
       is-glob: 4.0.3
       micromatch: 4.0.5
+      napi-wasm: 1.1.0
     dev: true
     bundledDependencies:
       - napi-wasm
@@ -4422,7 +4441,6 @@ packages:
 
   /lodash@4.17.21:
     resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
-    dev: true
 
   /loupe@2.3.7:
     resolution: {integrity: sha512-zSMINGVYkdpYSOBmLi0D1Uo7JU9nVdQKrHxC8eYlV+9YKK9WePqAlL7lSlorG/U2Fw1w0hTBmaa/jrQ3UbPHtA==}
@@ -4695,6 +4713,10 @@ packages:
     resolution: {integrity: sha512-7ZtY5KTCNheRGfEFxnedV5zFiORN1+Y1N6zvPTnHQd8ENUvfaDBeuJDZb2bN/oXwXxu3qkTXDzy57W5vAmDTBw==}
     engines: {node: ^14 || ^16 || >=18}
     hasBin: true
+    dev: true
+
+  /napi-wasm@1.1.0:
+    resolution: {integrity: sha512-lHwIAJbmLSjF9VDRm9GoVOy9AGp3aIvkjv+Kvz9h16QR3uSVYH78PNQUnT2U4X53mhlnV2M7wrhibQ3GHicDmg==}
     dev: true
 
   /natural-compare@1.4.0:
@@ -5795,6 +5817,12 @@ packages:
     resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
     engines: {node: '>=4'}
     dev: true
+
+  /redis-info@3.1.0:
+    resolution: {integrity: sha512-ER4L9Sh/vm63DkIE0bkSjxluQlioBiBgf5w1UuldaW/3vPcecdljVDisZhmnCMvsxHNiARTTDDHGg9cGwTfrKg==}
+    dependencies:
+      lodash: 4.17.21
+    dev: false
 
   /redis-parser@3.0.0:
     resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}

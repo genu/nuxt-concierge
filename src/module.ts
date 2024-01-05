@@ -1,19 +1,27 @@
-import { defineNuxtModule, addPlugin, createResolver } from '@nuxt/kit'
+import { defineNuxtModule, addPlugin, createResolver } from "@nuxt/kit";
+import { type UIConfig } from "@bull-board/api/dist/typings/app";
+import { name, version, configKey, compatibility } from "../package.json";
 
-// Module options TypeScript interface definition
-export interface ModuleOptions {}
+export interface ModuleOptions {
+  uiConfig: UIConfig;
+}
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
-    name: 'my-module',
-    configKey: 'myModule'
+    name,
+    configKey,
+    version,
+    compatibility,
   },
-  // Default configuration options of the Nuxt module
-  defaults: {},
-  setup (options, nuxt) {
-    const resolver = createResolver(import.meta.url)
+  defaults: {
+    uiConfig: {
+      boardTitle: "Bull Board",
+    },
+  },
+  setup(options, nuxt) {
+    const resolver = createResolver(import.meta.url);
 
     // Do not add the extension since the `.ts` will be transpiled to `.mjs` after `npm run prepack`
-    addPlugin(resolver.resolve('./runtime/plugin'))
-  }
-})
+    addPlugin(resolver.resolve("./runtime/plugin"));
+  },
+});
