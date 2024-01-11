@@ -52,7 +52,7 @@ export default defineNuxtModule<ModuleOptions>({
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
-
+    
     addServerImportsDir(resolve("./runtime/server/utils"));
     addServerImportsDir(resolve("./runtime/server/handlers"));
 
