@@ -20,25 +20,25 @@ Queues, workers and background jobs for nuxt
 
 ## Quick Setup
 
-1. Add `my-module` dependency to your project
+1. Add `nuxt-concierge` dependency to your project
 
 ```bash
 # Using pnpm
-pnpm add -D my-module
+pnpm add -D nuxt-concierge
 
 # Using yarn
-yarn add --dev my-module
+yarn add --dev nuxt-concierge
 
 # Using npm
-npm install --save-dev my-module
+npm install --save-dev nuxt-concierge
 ```
 
-2. Add `my-module` to the `modules` section of `nuxt.config.ts`
+2. Add `nuxt-concierge` to the `modules` section of `nuxt.config.ts`
 
 ```js
 export default defineNuxtConfig({
   modules: [
-    '@nuxtjs/concierge'
+    'nuxt-concierge'
   ]
 })
 ```
@@ -49,26 +49,26 @@ That's it! You can now use My Module in your Nuxt app ✨
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Generate type stubs
-npm run dev:prepare
+pnpm dev:prepare
 
 # Develop with the playground
-npm run dev
+pnpm dev
 
 # Build the playground
-npm run dev:build
+pnpm dev:build
 
 # Run ESLint
-npm run lint
+pnpm lint
 
 # Run Vitest
-npm run test
-npm run test:watch
+pnpm test
+pnpm test:watch
 
 # Release new version
-npm run release
+pnpm release
 ```
 
 <!-- Badges -->
