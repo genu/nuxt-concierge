@@ -1,6 +1,6 @@
 {
   "name": "@nuxtjs/concierge",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Task queue for Nuxt.js",
   "repository": "https://github.com/genu/nuxt-concierge",
   "license": "MIT",
@@ -29,7 +29,7 @@
     "docs:build": "nuxi generate docs",
     "docs:preview": "nuxi preview docs",
     "docs:dev": "nuxi dev docs",
-    "release": "pnpm run lint && pnpm run test && pnpm run prepack && changelogen --release && pnpm publish && git push --follow-tags",
+    "release": "pnpm run lint && pnpm run test && pnpm run prepack && changelogen --release && pnpm publish --access=public && git push --follow-tags",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest watch"
