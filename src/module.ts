@@ -11,6 +11,13 @@ import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
 import fg from "fast-glob";
 import defu from "defu";
+import { underline, yellow } from "colorette";
+import {
+  withTrailingSlash,
+  withoutTrailingSlash,
+  cleanDoubleSlashes,
+  joinURL,
+} from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { template, isValidRedisConnection } from "./utils";
 
@@ -118,5 +125,15 @@ export default defineNitroPlugin(async (nitroApp) => {
       nuxt.options.runtimeConfig.concierge,
       options
     );
+
+    if (nuxt.options.dev) {
+      const viewerUrl = `${cleanDoubleSlashes(
+        joinURL(withoutTrailingSlash(nuxt.options.devServer.url), "_concierge")
+      )}`;
+
+      logger.info(
+        `Concierge Dashboard: ${underline(yellow(withTrailingSlash(viewerUrl)))}`
+      );
+    }
   },
 });
