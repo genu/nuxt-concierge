@@ -7,11 +7,11 @@ import {
   addServerImportsDir,
   addServerHandler,
 } from "@nuxt/kit";
-import { type UIConfig } from "@bull-board/api/dist/typings/app";
-import { type RedisOptions } from "bullmq";
-import { name, version, configKey, compatibility } from "../package.json";
+import type { UIConfig } from "@bull-board/api/dist/typings/app";
+import type { RedisOptions } from "bullmq";
 import fg from "fast-glob";
 import defu from "defu";
+import { name, version, configKey, compatibility } from "../package.json";
 import { template, isValidRedisConnection } from "./utils";
 
 export interface ModuleOptions {
@@ -52,7 +52,7 @@ export default defineNuxtModule<ModuleOptions>({
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
-    
+
     addServerImportsDir(resolve("./runtime/server/utils"));
     addServerImportsDir(resolve("./runtime/server/handlers"));
 
@@ -118,6 +118,5 @@ export default defineNitroPlugin(async (nitroApp) => {
       nuxt.options.runtimeConfig.concierge,
       options
     );
-    ``;
   },
 });
