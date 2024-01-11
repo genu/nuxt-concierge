@@ -14,18 +14,25 @@ const { header } = useAppConfig();
       </template>
       <template v-else>
         Nuxt UI Pro
-        <UBadge label="Docs" variant="subtle" class="mb-0.5" />
+        <UBadge
+          label="Docs"
+          variant="subtle"
+          class="mb-0.5"
+        />
       </template>
     </template>
 
-    <template v-if="header?.search" #center>
+    <template
+      v-if="header?.search"
+      #center
+    >
       <UDocsSearchButton class="hidden lg:flex" />
     </template>
 
     <template #right>
       <UDocsSearchButton
         v-if="header?.search"
-        :label="null"
+        label="test"
         class="lg:hidden"
       />
 
