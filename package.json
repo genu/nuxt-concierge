@@ -1,6 +1,6 @@
 {
-  "name": "@nuxtjs/concierge",
-  "version": "1.0.3",
+  "name": "nuxt-concierge",
+  "version": "1.0.4",
   "description": "Task queue for Nuxt.js",
   "repository": "https://github.com/genu/nuxt-concierge",
   "license": "MIT",
