@@ -32,10 +32,10 @@ provide("navigation", navigation);
     <Header />
 
     <!-- <UMain> -->
-      <!-- <NuxtLayout> -->
-        poop
-        <!-- <NuxtPage /> -->
-      <!-- </NuxtLayout> -->
+    <!-- <NuxtLayout> -->
+    Nuxt Concierge
+    <!-- <NuxtPage /> -->
+    <!-- </NuxtLayout> -->
     <!-- </UMain> -->
 
     <!-- <Footer /> -->

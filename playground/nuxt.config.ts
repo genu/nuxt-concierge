@@ -1,5 +1,9 @@
 export default defineNuxtConfig({
-  modules: ['../src/module'],
-  myModule: {},
-  devtools: { enabled: true }
-})
+  modules: ["../src/module"],
+  concierge: {
+    redis: {
+      host: "localhost",
+    },
+  },
+  devtools: { enabled: true },
+});
