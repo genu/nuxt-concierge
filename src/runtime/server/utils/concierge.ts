@@ -1,4 +1,6 @@
 import { Queue, Worker } from "bullmq";
+import { useLogger } from "@nuxt/kit";
+
 import type {
   WorkerOptions,
   ConnectionOptions,
@@ -7,6 +9,8 @@ import type {
   Processor,
 } from "bullmq";
 import { useRuntimeConfig } from "#imports";
+
+const logger = useLogger("@nuxtjs/concierge");
 
 const queues: Queue[] = [];
 const workers: Worker[] = [];
@@ -58,7 +62,7 @@ export const $concierge = () => {
         connection: { ...redisOptions, ...defaultConnectionOptions },
         ...opts,
       }).on("closed", () => {
-        console.log(`Worker ${name} stopped`);
+        logger.info(`Worker ${name} stopped`);
       })
     );
   };

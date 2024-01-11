@@ -62,6 +62,8 @@ export default defineNuxtModule<ModuleOptions>({
     if (!canConnect) {
       logger.error(`Unable to connect to Redis instance`);
       return;
+    } else {
+      logger.info(`Connected to Redis instance`);
     }
 
     addServerHandler({
@@ -87,11 +89,13 @@ export default defineNuxtModule<ModuleOptions>({
       write: true,
       getContents() {
         return `
+import { useLogger } from "@nuxt/kit";
 ${template.importFiles(queues, "queue")}
 ${template.importFiles(workers, "worker")}
         
 export default defineNitroPlugin(async (nitroApp) => {
-    const { createQueue, createWorker } = $concierge();
+    const logger = useLogger("${name}");
+    const { workers, createQueue, createWorker } = $concierge();
 
     ${template.methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
     ${template.methodFactory(workers, "createWorker", "worker", [
@@ -99,6 +103,12 @@ export default defineNitroPlugin(async (nitroApp) => {
       "processor",
       "opts",
     ])}
+
+    nitroApp.hooks.hookOnce("close", async () => {
+      logger.info("Stopping " + workers.length + " workers");
+
+      await Promise.all(workers.map((worker) => worker.close()));
+    })
 })
         `;
       },
@@ -108,5 +118,6 @@ export default defineNitroPlugin(async (nitroApp) => {
       nuxt.options.runtimeConfig.concierge,
       options
     );
+    ``;
   },
 });

@@ -5,15 +5,19 @@ export const isValidRedisConnection = async (
   redisOptions: RedisOptions
 ): Promise<boolean> => {
   return new Promise<boolean>((resolve) => {
-    const client = new Redis(redisOptions);
+    const client = new Redis({ ...redisOptions, lazyConnect: true });
 
     client
-      .ping()
-      .then(() => resolve(true))
-      .catch(() => resolve(false));
+      .connect()
+      .then(() => {
+        client.disconnect();
+        resolve(true);
+      })
+      .catch(() => {});
 
     client.on("error", () => {
       resolve(false);
+      client.disconnect();
     });
   });
 };
