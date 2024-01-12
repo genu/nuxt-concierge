@@ -106,6 +106,7 @@ export default defineNuxtModule<ModuleOptions>({
       getContents() {
         return `
 import { useLogger } from "@nuxt/kit";
+import { defineNitroPlugin, $concierge } from "#imports";
 ${template.importFiles(queues, "queue")}
 ${template.importFiles(workers, "worker")}
         
