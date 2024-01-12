@@ -5,5 +5,8 @@ export default defineNuxtConfig({
       host: "localhost",
     },
   },
+  imports: {
+    autoImport: false,
+  },
   devtools: { enabled: true },
 });
