@@ -6,6 +6,7 @@ import {
   addServerPlugin,
   addServerImportsDir,
   addServerHandler,
+  addTypeTemplate,
 } from "@nuxt/kit";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
@@ -135,6 +136,20 @@ export default defineNitroPlugin(async (nitroApp) => {
       nuxt.options.runtimeConfig.concierge,
       options
     );
+
+    addTypeTemplate({
+      filename: "types/concierge.d.ts",
+      write: true,
+      getContents() {
+        return `
+        declare module "#concierge" {
+          const $concierge: typeof import("${resolve(
+            "./runtime/server/utils/concierge"
+          )}").$concierge;
+        }
+        `;
+      },
+    });
 
     if (nuxt.options.dev) {
       const viewerUrl = `${cleanDoubleSlashes(
