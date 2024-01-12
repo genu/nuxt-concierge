@@ -3,7 +3,6 @@ import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
 import { $concierge, useRuntimeConfig } from "#imports";
-import { defineEventHandler } from "#nitropack";
 
 let uiRouter: Router;
 
