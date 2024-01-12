@@ -6,6 +6,7 @@ import {
   addServerPlugin,
   addServerImportsDir,
   addServerHandler,
+  addTypeTemplate,
 } from "@nuxt/kit";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
@@ -62,6 +63,26 @@ export default defineNuxtModule<ModuleOptions>({
 
     addServerImportsDir(resolve("./runtime/server/utils"));
     addServerImportsDir(resolve("./runtime/server/handlers"));
+
+    addTypeTemplate({
+      filename: "types/concierge.d.ts",
+      getContents: () => `
+import { Queue, Worker } from "bullmq";
+import type { WorkerOptions, ConnectionOptions, QueueOptions, RedisOptions, Processor} from "bullmq";
+
+declare module "#imports" {
+  export const $concierge = (): {
+    queues: Queue[];
+    workers: Worker[];
+    createQueue: (name: string, opts?: Omit<QueueOptions, "connection">) => void;
+    createWorker: (name: string, processor?: string | URL | null | Processor, opts?: Omit<WorkerOptions, "connection">) => void;
+  } => {};
+}
+
+export {};
+      
+      `,
+    });
 
     // Test Redis connection
     const canConnect = await isValidRedisConnection(options.redis);
