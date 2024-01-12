@@ -75,10 +75,10 @@ export default defineNuxtModule<ModuleOptions>({
 
     addServerHandler({
       route: "/_concierge",
-      handler: resolve("./runtime/server/routes/ui.ts"),
+      handler: resolve("./runtime/server/routes/ui"),
     });
 
-    addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler.ts"));
+    addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler"));
 
     const workers = await scanHandlers(
       resolve(nuxt.options.srcDir, `server/concierge/workers`)
