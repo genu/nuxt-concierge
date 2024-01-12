@@ -1,4 +1,4 @@
-import { QueueOptions } from "bullmq";
+import type { QueueOptions } from "bullmq";
 
 export const defineQueue = (
   name: string,

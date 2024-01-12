@@ -95,19 +95,14 @@ export default defineNuxtModule<ModuleOptions>({
       resolve(nuxt.options.srcDir, `server/concierge/queues`)
     );
 
-    logger.success(
-      `Loaded ${workers.length} ${pluralize("worker", workers.length)} and ${
-        queues.length
-      } ${pluralize("queue", queues.length)}`
-    );
-
     addTemplate({
       filename: "concierge-handler.ts",
       write: true,
       getContents() {
         return `
 import { useLogger } from "@nuxt/kit";
-import { defineNitroPlugin, $concierge } from "#imports";
+import { defineNitroPlugin } from "#imports";
+import { $concierge } from "#concierge";
 ${template.importFiles(queues, "queue")}
 ${template.importFiles(workers, "worker")}
         
@@ -115,12 +110,19 @@ export default defineNitroPlugin(async (nitroApp) => {
     const logger = useLogger("${name}");
     const { workers, createQueue, createWorker } = $concierge();
 
+    
     ${template.methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
     ${template.methodFactory(workers, "createWorker", "worker", [
       "name",
       "processor",
       "opts",
     ])}
+
+    logger.success("Loaded ${workers.length} ${pluralize(
+          "worker",
+          workers.length
+        )} and ${queues.length} ${pluralize("queue", queues.length)}")  
+    
 
     nitroApp.hooks.hookOnce("close", async () => {
       logger.info("Stopping " + workers.length + " workers");

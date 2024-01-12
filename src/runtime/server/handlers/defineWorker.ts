@@ -1,4 +1,4 @@
-import { Processor, WorkerOptions } from "bullmq";
+import type { Processor, WorkerOptions } from "bullmq";
 
 export const defineWorker = (
   name: string,
