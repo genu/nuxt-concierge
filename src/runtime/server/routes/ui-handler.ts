@@ -3,7 +3,7 @@ import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
 
 const serverAdapter = new H3Adapter();
-serverAdapter.setBasePath("/concierge");
+serverAdapter.setBasePath("/_concierge");
 
 const { queues } = $concierge();
 
@@ -19,6 +19,6 @@ createBullBoard({
   },
 });
 
-export default defineEventHandler(async (event) => {
-  return serverAdapter.registerHandlers().handler(event);
-});
+const uiRouter = serverAdapter.registerHandlers();
+
+export default defineEventHandler(uiRouter.handler);

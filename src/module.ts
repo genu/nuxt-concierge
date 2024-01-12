@@ -73,9 +73,15 @@ export default defineNuxtModule<ModuleOptions>({
       logger.info(`Connected to Redis instance`);
     }
 
+    // Add Server handlers for UI
     addServerHandler({
       route: "/_concierge",
-      handler: resolve("./runtime/server/routes/ui"),
+      handler: resolve("./runtime/server/routes/ui-handler"),
+    });
+
+    addServerHandler({
+      route: "/_concierge/**",
+      handler: resolve("./runtime/server/routes/ui-handler"),
     });
 
     addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler"));
@@ -132,7 +138,9 @@ export default defineNitroPlugin(async (nitroApp) => {
       )}`;
 
       logger.info(
-        `Concierge Dashboard: ${underline(yellow(withTrailingSlash(viewerUrl)))}`
+        `Concierge Dashboard: ${underline(
+          yellow(withTrailingSlash(viewerUrl))
+        )}`
       );
     }
   },
