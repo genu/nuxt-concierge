@@ -64,25 +64,25 @@ export default defineNuxtModule<ModuleOptions>({
     addServerImportsDir(resolve("./runtime/server/utils"));
     addServerImportsDir(resolve("./runtime/server/handlers"));
 
-    addTypeTemplate({
-      filename: "types/concierge.d.ts",
-      getContents: () => `
-import { Queue, Worker } from "bullmq";
-import type { WorkerOptions, ConnectionOptions, QueueOptions, RedisOptions, Processor} from "bullmq";
+//     addTypeTemplate({
+//       filename: "types/concierge.d.ts",
+//       getContents: () => `
+// import { Queue, Worker } from "bullmq";
+// import type { WorkerOptions, ConnectionOptions, QueueOptions, RedisOptions, Processor} from "bullmq";
 
-declare module "#imports" {
-  export const $concierge = (): {
-    queues: Queue[];
-    workers: Worker[];
-    createQueue: (name: string, opts?: Omit<QueueOptions, "connection">) => void;
-    createWorker: (name: string, processor?: string | URL | null | Processor, opts?: Omit<WorkerOptions, "connection">) => void;
-  } => {};
-}
+// declare module "#imports" {
+//   export const $concierge = (): {
+//     queues: Queue[];
+//     workers: Worker[];
+//     createQueue: (name: string, opts?: Omit<QueueOptions, "connection">) => void;
+//     createWorker: (name: string, processor?: string | URL | null | Processor, opts?: Omit<WorkerOptions, "connection">) => void;
+//   } => {};
+// }
 
-export {};
+// export {};
       
-      `,
-    });
+//       `,
+//     });
 
     // Test Redis connection
     const canConnect = await isValidRedisConnection(options.redis);
