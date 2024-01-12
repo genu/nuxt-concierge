@@ -1,6 +1,18 @@
 # Changelog
 
 
+## v1.0.13
+
+[compare changes](https://github.com/genu/nuxt-concierge/compare/v1.0.12...v1.0.13)
+
+### 🏡 Chore
+
+- **release:** V1.0.12 ([117fdd2](https://github.com/genu/nuxt-concierge/commit/117fdd2))
+
+### ❤️ Contributors
+
+- Eugen Istoc <eugenistoc@gmail.com>
+
 ## v1.0.12
 
 [compare changes](https://github.com/genu/nuxt-concierge/compare/v1.0.11...v1.0.12)
