@@ -6,12 +6,12 @@ import {
   addServerPlugin,
   addServerImportsDir,
   addServerHandler,
-  addTypeTemplate,
 } from "@nuxt/kit";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
 import fg from "fast-glob";
 import defu from "defu";
+import pluralize from "pluralize";
 import { underline, yellow } from "colorette";
 import {
   withTrailingSlash,
@@ -64,34 +64,12 @@ export default defineNuxtModule<ModuleOptions>({
     addServerImportsDir(resolve("./runtime/server/utils"));
     addServerImportsDir(resolve("./runtime/server/handlers"));
 
-//     addTypeTemplate({
-//       filename: "types/concierge.d.ts",
-//       getContents: () => `
-// import { Queue, Worker } from "bullmq";
-// import type { WorkerOptions, ConnectionOptions, QueueOptions, RedisOptions, Processor} from "bullmq";
-
-// declare module "#imports" {
-//   export const $concierge = (): {
-//     queues: Queue[];
-//     workers: Worker[];
-//     createQueue: (name: string, opts?: Omit<QueueOptions, "connection">) => void;
-//     createWorker: (name: string, processor?: string | URL | null | Processor, opts?: Omit<WorkerOptions, "connection">) => void;
-//   } => {};
-// }
-
-// export {};
-      
-//       `,
-//     });
-
     // Test Redis connection
     const canConnect = await isValidRedisConnection(options.redis);
 
     if (!canConnect) {
       logger.error(`Unable to connect to Redis instance`);
       return;
-    } else {
-      logger.info(`Connected to Redis instance`);
     }
 
     // Add Server handlers for UI
@@ -115,8 +93,11 @@ export default defineNuxtModule<ModuleOptions>({
       resolve(nuxt.options.srcDir, `server/concierge/queues`)
     );
 
-    logger.info(`Found ${workers.length} workers`);
-    logger.info(`Found ${queues.length} queues`);
+    logger.success(
+      `Loaded ${workers.length} ${pluralize("worker", workers.length)} and ${
+        queues.length
+      } ${pluralize("queue", queues.length)}`
+    );
 
     addTemplate({
       filename: "concierge-handler.ts",
