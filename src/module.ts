@@ -55,6 +55,7 @@ export default defineNuxtModule<ModuleOptions>({
     redis: {
       host: "localhost",
       port: 6379,
+      password: "",
     },
   },
   async setup(options, nuxt) {
