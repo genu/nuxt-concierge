@@ -11,6 +11,9 @@ importers:
       '@bull-board/api':
         specifier: ^5.13.0
         version: 5.13.0(@bull-board/ui@5.13.0)
+      '@bull-board/h3':
+        specifier: ^5.13.0
+        version: 5.13.0
       '@nuxt/kit':
         specifier: ^3.9.1
         version: 3.9.1(rollup@3.29.4)
@@ -33,9 +36,6 @@ importers:
         specifier: ^1.3.2
         version: 1.3.2
     devDependencies:
-      '@bull-board/h3':
-        specifier: ^5.13.0
-        version: 5.13.0
       '@nuxt/devtools':
         specifier: latest
         version: 1.0.6(nuxt@3.9.1)(rollup@3.29.4)(vite@5.0.11)
@@ -434,6 +434,7 @@ packages:
     dependencies:
       '@bull-board/ui': 5.13.0
       redis-info: 3.1.0
+    dev: false
 
   /@bull-board/h3@5.13.0:
     resolution: {integrity: sha512-lOwWbpohEZlNtqIWpbOMgrjPLddrgPKG0oBA/tpNq5TcfuprONmIIC7UlYif5h1S8cNYNWCnwIwBB/dRZahAig==}
@@ -442,12 +443,13 @@ packages:
       '@bull-board/ui': 5.13.0
       ejs: 3.1.9
       h3: 1.10.0
-    dev: true
+    dev: false
 
   /@bull-board/ui@5.13.0:
     resolution: {integrity: sha512-UZ88j0c/G/UI5+F3zh6If9LqgF4kMmvRmTgnNckm8HJbclUdqvrcHBpo/e0HfdCaWGGhI2Gc12hq+AECc6c4Sw==}
     dependencies:
       '@bull-board/api': 5.13.0(@bull-board/ui@5.13.0)
+    dev: false
 
   /@cloudflare/kv-asset-handler@0.3.0:
     resolution: {integrity: sha512-9CB/MKf/wdvbfkUdfrj+OkEwZ5b7rws0eogJ4293h+7b6KX5toPwym+VQKmILafNB9YiehqY0DlNrDcDhdWHSQ==}
@@ -3674,7 +3676,7 @@ packages:
     hasBin: true
     dependencies:
       jake: 10.8.7
-    dev: true
+    dev: false
 
   /electron-to-chromium@1.4.623:
     resolution: {integrity: sha512-lKoz10iCYlP1WtRYdh5MvocQPWVRoI7ysp6qf18bmeBgR8abE6+I2CsfyNKztRDZvhdWc+krKT6wS7Neg8sw3A==}
@@ -4011,7 +4013,7 @@ packages:
     resolution: {integrity: sha512-w1cEuf3S+DrLCQL7ET6kz+gmlJdbq9J7yXCSjK/OZCPA+qEN1WyF4ZAf0YYJa4/shHJra2t/d/r8SV4Ji+x+8Q==}
     dependencies:
       minimatch: 5.1.6
-    dev: true
+    dev: false
 
   /fill-range@7.0.1:
     resolution: {integrity: sha512-qOo9F+dMUmC2Lcb4BbVvnKJxTPjCm+RRpe4gDuGrzkL7mEVl/djYSu2OdQ2Pa302N4oqkSg9ir6jaLWJ2USVpQ==}
@@ -4764,7 +4766,7 @@ packages:
       chalk: 4.1.2
       filelist: 1.0.4
       minimatch: 3.1.2
-    dev: true
+    dev: false
 
   /jiti@1.21.0:
     resolution: {integrity: sha512-gFqAIbuKyyso/3G2qhiO2OM6shY6EPP/R0+mkDbyspxKazh8BXDC5FiFsUjlczgdNz/vfra0da2y+aHrusLG/Q==}
@@ -6948,6 +6950,7 @@ packages:
     resolution: {integrity: sha512-ER4L9Sh/vm63DkIE0bkSjxluQlioBiBgf5w1UuldaW/3vPcecdljVDisZhmnCMvsxHNiARTTDDHGg9cGwTfrKg==}
     dependencies:
       lodash: 4.17.21
+    dev: false
 
   /redis-parser@3.0.0:
     resolution: {integrity: sha512-DJnGAeenTdpMEH6uAJRK/uiyEIH9WVsUmoLwzudwGJUwZPp80PDBWPHXSAGNPwNvIXAbe7MSUB1zQFugFml66A==}
