@@ -6,7 +6,7 @@ import {
   useRuntimeConfig,
   defineEventHandler,
   $concierge,
-} from "#build/types/nitro-imports";
+} from "#imports";
 
 let uiRouter: Router;
 

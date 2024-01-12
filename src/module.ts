@@ -76,12 +76,12 @@ export default defineNuxtModule<ModuleOptions>({
     // Add Server handlers for UI
     addServerHandler({
       route: "/_concierge",
-      handler: resolve("./runtime/server/routes/ui-handler"),
+      handler: resolve("./runtime/server/routes/ui-handler.ts"),
     });
 
     addServerHandler({
       route: "/_concierge/**",
-      handler: resolve("./runtime/server/routes/ui-handler"),
+      handler: resolve("./runtime/server/routes/ui-handler.ts"),
     });
 
     addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler"));
