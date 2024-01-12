@@ -2,7 +2,7 @@ import type { Router } from "h3";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
-import { useRuntimeConfig, defineEventHandler } from "#imports";
+import { useRuntimeConfig } from "#imports";
 import { $concierge } from "../utils/concierge";
 
 let uiRouter: Router;
