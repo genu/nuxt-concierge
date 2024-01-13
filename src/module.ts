@@ -139,17 +139,25 @@ export default defineNitroPlugin(async (nitroApp) => {
       options
     );
 
+    nuxt.hook("nitro:config", (nitroConfig) => {
+      if (!nitroConfig.alias) return;
+
+      nitroConfig.alias["#concierge"] = resolve(
+        "./runtime/server/utils/concierge"
+      );
+    });
+
     addTypeTemplate({
       filename: "types/concierge.d.ts",
       write: true,
       getContents() {
         return `
-        declare module "#concierge" {
-          const $concierge: typeof import("${resolve(
-            "./runtime/server/utils/concierge"
-          )}").$concierge;
-        }
-        `;
+declare module "#concierge" {
+  const $concierge: typeof import("${resolve(
+    "./runtime/server/utils/concierge"
+  )}").$concierge;
+}
+`;
       },
     });
 
