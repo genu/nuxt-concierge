@@ -1,4 +1,3 @@
-import type { Router } from "h3";
 import { defineEventHandler } from "h3";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
