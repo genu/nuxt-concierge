@@ -35,6 +35,11 @@ export const $concierge = () => {
     name: string,
     opts?: Omit<QueueOptions, "connection">
   ) => {
+    // check if queue already exists
+    if (queues.find((queue) => queue.name === name)) {
+      logger.warn(`Queue ${name} already exists`);
+      return;
+    }
     const defaultConnectionOptions: ConnectionOptions = {
       enableOfflineQueue: false,
     };
