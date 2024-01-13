@@ -6,31 +6,27 @@ import { H3Adapter } from "@bull-board/h3";
 import { useRuntimeConfig } from "#imports";
 import { $concierge } from "#concierge";
 
-let uiRouter: Router;
+const {
+  concierge: { ui },
+} = useRuntimeConfig();
 
-const getUiRouter = () => {
+const serverAdapter = new H3Adapter();
+serverAdapter.setBasePath("/_concierge");
+
+const bullboard = createBullBoard({
+  queues: [],
+  serverAdapter,
+  options: {
+    uiConfig: ui,
+  },
+});
+
+const uiRouter = serverAdapter.registerHandlers();
+
+export default defineEventHandler(async (event) => {
   const { queues } = $concierge();
 
-  const {
-    concierge: { ui },
-  } = useRuntimeConfig();
+  bullboard.replaceQueues(queues.map((queue) => new BullMQAdapter(queue)));
 
-  if (!uiRouter) {
-    const serverAdapter = new H3Adapter();
-    serverAdapter.setBasePath("/_concierge");
-
-    createBullBoard({
-      queues: queues.map((queue) => new BullMQAdapter(queue)),
-      serverAdapter,
-      options: {
-        uiConfig: ui,
-      },
-    });
-
-    uiRouter = serverAdapter.registerHandlers();
-  }
-
-  return uiRouter;
-};
-
-export default defineEventHandler(getUiRouter().handler);
+  return uiRouter.handler(event);
+});
