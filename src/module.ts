@@ -79,13 +79,15 @@ export default defineNuxtModule<ModuleOptions>({
 
     createTemplates(queues, workers, options.queues, name);
 
-    logger.success(
-      `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
-        "worker",
-        workers.length,
-        true
-      )}`
-    );
+    if (process.dev) {
+      logger.success(
+        `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
+          "worker",
+          workers.length,
+          true
+        )}`
+      );
+    }
 
     nuxt.options.runtimeConfig.concierge = defu(
       nuxt.options.runtimeConfig.concierge,
