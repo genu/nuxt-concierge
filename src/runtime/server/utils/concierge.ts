@@ -10,7 +10,7 @@ import type {
 } from "bullmq";
 import { useRuntimeConfig } from "#imports";
 
-const logger = useLogger("@nuxtjs/concierge");
+const logger = useLogger("nuxt-concierge");
 
 const queues: Queue[] = [];
 const workers: Worker[] = [];

@@ -2,17 +2,15 @@ import {
   defineNuxtModule,
   useLogger,
   createResolver,
-  addTemplate,
   addServerPlugin,
   addServerImportsDir,
   addServerHandler,
   addTypeTemplate,
 } from "@nuxt/kit";
+import pluralize from "pluralize";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
-import fg from "fast-glob";
 import defu from "defu";
-import pluralize from "pluralize";
 import { underline, yellow } from "colorette";
 import {
   withTrailingSlash,
@@ -21,25 +19,13 @@ import {
   joinURL,
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
-import { template, isValidRedisConnection } from "./utils";
+import { isValidRedisConnection, scanFolder } from "./helplers";
+import { createTemplates } from "./templates";
 
 export interface ModuleOptions {
   redis: RedisOptions;
   ui: UIConfig;
-}
-
-async function scanHandlers(path: string): Promise<string[]> {
-  const files: string[] = [];
-
-  const updatedFiles = await fg("**/*.{ts,js,mjs}", {
-    cwd: path,
-    absolute: true,
-    onlyFiles: true,
-  });
-
-  files.push(...new Set(updatedFiles));
-
-  return files;
+  queues: string[];
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -58,6 +44,7 @@ export default defineNuxtModule<ModuleOptions>({
       port: 6379,
       password: "",
     },
+    queues: [],
   },
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
@@ -87,52 +74,18 @@ export default defineNuxtModule<ModuleOptions>({
 
     addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler"));
 
-    const workers = await scanHandlers(
-      resolve(nuxt.options.srcDir, `server/concierge/workers`)
+    const workers = await scanFolder("server/concierge/workers");
+    const queues = await scanFolder("server/concierge/queues");
+
+    createTemplates(queues, workers, options.queues, name);
+
+    logger.success(
+      `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
+        "worker",
+        workers.length,
+        true
+      )}`
     );
-
-    const queues = await scanHandlers(
-      resolve(nuxt.options.srcDir, `server/concierge/queues`)
-    );
-
-    addTemplate({
-      filename: "concierge-handler.ts",
-      write: true,
-      getContents() {
-        return `
-import { useLogger } from "@nuxt/kit";
-import { defineNitroPlugin } from "#imports";
-import { $concierge } from "#concierge";
-${template.importFiles(queues, "queue")}
-${template.importFiles(workers, "worker")}
-        
-export default defineNitroPlugin(async (nitroApp) => {
-    const logger = useLogger("${name}");
-    const { workers, createQueue, createWorker } = $concierge();
-
-    
-    ${template.methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
-    ${template.methodFactory(workers, "createWorker", "worker", [
-      "name",
-      "processor",
-      "opts",
-    ])}
-
-    logger.success("Loaded ${workers.length} ${pluralize(
-          "worker",
-          workers.length
-        )} and ${queues.length} ${pluralize("queue", queues.length)}")  
-    
-
-    nitroApp.hooks.hookOnce("close", async () => {
-      logger.info("Stopping " + workers.length + " workers");
-
-      await Promise.all(workers.map((worker) => worker.close()));
-    })
-})
-        `;
-      },
-    });
 
     nuxt.options.runtimeConfig.concierge = defu(
       nuxt.options.runtimeConfig.concierge,
