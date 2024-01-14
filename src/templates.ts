@@ -1,4 +1,9 @@
-import { addTemplate } from "@nuxt/kit";
+import {
+  addTemplate,
+  addTypeTemplate,
+  createResolver,
+  useNuxt,
+} from "@nuxt/kit";
 
 export const importFiles = (files: string[], prefix: string = "file") =>
   files
@@ -26,7 +31,7 @@ export const methodFactory = (
   return r.join("\n\t\t");
 };
 
-export const createTemplates = (
+export const createTemplateNuxtPlugin = (
   queues: string[],
   workers: string[],
   adhocQueues: string[],
@@ -46,7 +51,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     // Queues
     ${methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
     
-    // Adhoc Queues
+    // Simple Queues
     ${adhocQueues.map((queue) => `createQueue("${queue}");`).join("\n\t\t")}
 
     // Workers
@@ -65,8 +70,35 @@ export default defineNitroPlugin(async (nitroApp) => {
   `;
 
   addTemplate({
-    filename: "concierge-handler.ts",
+    filename: "concierge-nuxt-plugin.ts",
     write: true,
     getContents: () => nitroPlugin,
+  });
+};
+
+export const createTemplateType = () => {
+  const { resolve } = createResolver(import.meta.url);
+  const nuxt = useNuxt();
+
+  nuxt.hook("nitro:config", (nitroConfig) => {
+    if (!nitroConfig.alias) return;
+
+    nitroConfig.alias["#concierge"] = resolve(
+      "./runtime/server/utils/concierge"
+    );
+  });
+
+  addTypeTemplate({
+    filename: "types/concierge.d.ts",
+    write: true,
+    getContents() {
+      return `
+declare module "#concierge" {
+  const $concierge: typeof import("${resolve(
+    "./runtime/server/utils/concierge"
+  )}").$concierge;
+}
+`;
+    },
   });
 };

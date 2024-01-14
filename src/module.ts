@@ -5,7 +5,6 @@ import {
   addServerPlugin,
   addServerImportsDir,
   addServerHandler,
-  addTypeTemplate,
 } from "@nuxt/kit";
 import pluralize from "pluralize";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
@@ -20,12 +19,13 @@ import {
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { isValidRedisConnection, scanFolder } from "./helplers";
-import { createTemplates } from "./templates";
+import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
 
 export interface ModuleOptions {
   redis: RedisOptions;
   ui: UIConfig;
   queues: string[];
+  enabled?: boolean;
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -45,6 +45,7 @@ export default defineNuxtModule<ModuleOptions>({
       password: "",
     },
     queues: [],
+    enabled: process.env.NODE_ENV === "development",
   },
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
@@ -72,14 +73,15 @@ export default defineNuxtModule<ModuleOptions>({
       handler: resolve("./runtime/server/routes/ui-handler"),
     });
 
-    addServerPlugin(resolve(nuxt.options.buildDir, "concierge-handler"));
+    addServerPlugin(resolve(nuxt.options.buildDir, "concierge-nuxt-plugin"));
 
     const workers = await scanFolder("server/concierge/workers");
     const queues = await scanFolder("server/concierge/queues");
 
-    createTemplates(queues, workers, options.queues, name);
+    createTemplateNuxtPlugin(queues, workers, options.queues, name);
+    createTemplateType();
 
-    if (process.dev) {
+    if (nuxt.options.dev) {
       logger.success(
         `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
           "worker",
@@ -93,28 +95,6 @@ export default defineNuxtModule<ModuleOptions>({
       nuxt.options.runtimeConfig.concierge,
       options
     );
-
-    nuxt.hook("nitro:config", (nitroConfig) => {
-      if (!nitroConfig.alias) return;
-
-      nitroConfig.alias["#concierge"] = resolve(
-        "./runtime/server/utils/concierge"
-      );
-    });
-
-    addTypeTemplate({
-      filename: "types/concierge.d.ts",
-      write: true,
-      getContents() {
-        return `
-declare module "#concierge" {
-  const $concierge: typeof import("${resolve(
-    "./runtime/server/utils/concierge"
-  )}").$concierge;
-}
-`;
-      },
-    });
 
     if (nuxt.options.dev) {
       const viewerUrl = `${cleanDoubleSlashes(
