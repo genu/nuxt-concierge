@@ -72,6 +72,8 @@ For example:
 `/concierge/queues/my-queue.ts`:
 
 ```ts
+import { defineQueue } from "#imports";
+
 export default defineQueue("SendEmail", {
   defaultJobOptions: {
     removeOnComplete: true,
@@ -93,6 +95,8 @@ For example:
 `/concierge/workers/my-worker.ts`:
 
 ```ts
+import { defineWorker } from "#imports";
+
 export default defineWorker("SendEmail", async (job) => {
   const { to } = job.data;
 
@@ -113,6 +117,8 @@ For example:
 `/concierge/cron/daily-report.ts`:
 
 ```ts
+import { defineCron } from "#imports";
+
 export default defineCron(
   "DailySalesReport",
   async () => {
