@@ -1,3 +1,3 @@
-import { defineWorker } from "#imports";
-
-export default defineWorker("UserQueueFactory", async () => {}, {});
+export default defineWorker("UserQueueFactory", async (job) => {
+  // Do something
+}, {});

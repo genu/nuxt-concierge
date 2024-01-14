@@ -1,3 +1,6 @@
-import { defineQueue } from "#imports";
-
-export default defineQueue("UserQueueFactory");
+export default defineQueue("UserQueueFactory", {
+  defaultJobOptions: {
+    removeOnComplete: true,
+    removeOnFail: true,
+  },
+});
