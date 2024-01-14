@@ -25,7 +25,7 @@ export interface ModuleOptions {
   redis: RedisOptions;
   ui: UIConfig;
   queues: string[];
-  enabled?: boolean;
+  managementUI?: boolean;
 }
 
 export default defineNuxtModule<ModuleOptions>({
@@ -45,7 +45,7 @@ export default defineNuxtModule<ModuleOptions>({
       password: "",
     },
     queues: [],
-    enabled: process.env.NODE_ENV === "development",
+    managementUI: process.env.NODE_ENV === "development",
   },
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);

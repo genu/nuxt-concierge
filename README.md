@@ -1,19 +1,15 @@
 # nuxt-concierge
 
-[![npm version][npm-version-src]][npm-version-href]
-[![npm downloads][npm-downloads-src]][npm-downloads-href]
-[![License][license-src]][license-href]
-[![Nuxt][nuxt-src]][nuxt-href]
+[![npm version](https://badge.fury.io/js/nuxt-concierge.svg)](https://www.npmjs.com/package/nuxt-concierge)
+[![npm downloads](https://img.shields.io/npm/dm/nuxt-concierge.svg)](https://www.npmjs.com/package/nuxt-concierge)
+[![License](https://img.shields.io/npm/l/nuxt-concierge.svg)](https://github.com/your-org/nuxt-concierge/blob/main/LICENSE)
+[![Nuxt](https://img.shields.io/badge/nuxt.js-v2.14.12-04C690.svg)](https://nuxtjs.org/)
 
 Queues, workers and background jobs for nuxt
 
 - [✨ &nbsp;Release Notes](/CHANGELOG.md)
-  <!-- - [🏀 Online playground](https://stackblitz.com/github/your-org/my-module?file=playground%2Fapp.vue) -->
-  <!-- - [📖 &nbsp;Documentation](https://example.com) -->
 
 ## Features
-
-<!-- Highlight some of the features your module provide here -->
 
 - Create queues and workers based on bullmq
 - Create scheduled tasks
@@ -54,17 +50,6 @@ export default defineNuxtConfig({
 
 ## Usage
 
-```ts
-export default defineNuxtConfig({
-  modules: ["nuxt-concierge"],
-  concierge: {
-    redis: {
-      host: "localhost",
-    },
-  },
-});
-```
-
 ### Creating Queues
 
 There are two ways to create queues.
@@ -75,7 +60,7 @@ We call this **Simple Queues** because only a queue name is needed. To create a 
 
 ```ts
 concierge: {
-  queues: ["my-queue"],
+  queues: ["SendEmail"],
 },
 
 ```
@@ -87,7 +72,7 @@ For example:
 `/concierge/queues/my-queue.ts`:
 
 ```ts
-export default defineQueue("MyQueue", {
+export default defineQueue("SendEmail", {
   defaultJobOptions: {
     removeOnComplete: true,
     removeOnFail: true,
@@ -108,14 +93,40 @@ For example:
 `/concierge/workers/my-worker.ts`:
 
 ```ts
-export default defineWorker("MyWorker", async (job) => {
-  // Do something
+export default defineWorker("SendEmail", async (job) => {
+  const { to } = job.data;
+
+  // send customer email
 });
 ```
 
 Workers defined this way will **automatically be started** during application startup
 
-**NOTE**: your queue must be created in the `/concierge/workers` folder
+**NOTE**: your workers must be created in the `/concierge/workers` folder
+
+### Creating CRON Jobs
+
+Cron jobs can be created using the `defineCron` helper.
+
+For example:
+
+`/concierge/cron/daily-report.ts`:
+
+```ts
+export default defineCron(
+  "DailySalesReport",
+  async () => {
+    // Run a daily report
+  },
+  {
+    every: "0 0 * * *", // every day at midnight
+  }
+);
+```
+
+Cron jobs are placed in a special queue called `CRON`. This queue is automatically created for you.
+
+**NOTE**: your cron must be created in the `/concierge/cron` folder
 
 ### Accessing queues
 
@@ -126,9 +137,9 @@ import { $concierge } from "#concierge";
 
 export default defineEventHandler(async (event) => {
   const { getQueue } = $concierge();
-  const myQueue = getQueue("MyQueue");
+  const emailQueue = getQueue("SendEmail");
 
-  await myQueue.add("myJob", { foo: "bar" });
+  await emailQueue.add("sendWelcomeEmail", { to: "customer@helloworld.com" });
 
   return true;
 });
@@ -150,7 +161,7 @@ Yes and no, but mostly no. Serverless environments typically have a timeout, so 
 
 2. **Can I disable the Queue management UI in production?**
 
-The management UI is already disabled by default in production. If you waan't to enable it in production, you must enable it explicitly in the options:
+The management UI is already disabled by default in production. If you want't to enable it in production, you must enable it explicitly in the options:
 
 ```ts
 export default defineNuxtConfig({
@@ -158,7 +169,7 @@ export default defineNuxtConfig({
     redis: {
       host: "...",
     },
-    enabled: true,
+    managementUI: true,
   },
 });
 ```
@@ -166,7 +177,6 @@ export default defineNuxtConfig({
 3. **Can I password protect the Queue management UI?**
 
 Auth for the UI is out of scope of this module, but it can easily be done using the [Nuxt Security](https://nuxt-security.vercel.app/)
-
 
 ## Development
 

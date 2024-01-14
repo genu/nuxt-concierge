@@ -7,7 +7,7 @@ import { $concierge } from "#concierge";
 import { useLogger } from "@nuxt/kit";
 
 const {
-  concierge: { ui, enabled },
+  concierge: { ui, managementUI },
 } = useRuntimeConfig();
 
 const serverAdapter = new H3Adapter();
@@ -26,7 +26,7 @@ const uiRouter = serverAdapter.registerHandlers();
 export default defineEventHandler(async (event) => {
   const logger = useLogger("nuxt-concierge");
 
-  if (!enabled) {
+  if (!managementUI) {
     logger.warn("Concierge is disabled");
     setResponseStatus(event, 404);
 
