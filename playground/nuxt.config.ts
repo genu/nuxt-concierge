@@ -4,7 +4,6 @@ export default defineNuxtConfig({
     redis: {
       host: "localhost",
     },
-    queues: ["linkedQueue"],
   },
   imports: {
     autoImport: false,
