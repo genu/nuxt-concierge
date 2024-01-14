@@ -1,3 +1,4 @@
+import { defineEventHandler } from "h3";
 import { $concierge } from "#concierge";
 
 export default defineEventHandler(async () => {
