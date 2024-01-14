@@ -7,6 +7,7 @@ import type {
   QueueOptions,
   RedisOptions,
   Processor,
+  RepeatOptions,
 } from "bullmq";
 import { useRuntimeConfig } from "#imports";
 
@@ -14,6 +15,11 @@ const logger = useLogger("nuxt-concierge");
 
 const queues: Queue[] = [];
 const workers: Worker[] = [];
+const cronJobs: {
+  name: string;
+  processor: () => Promise<void>;
+  schedule: RepeatOptions;
+}[] = [];
 
 export const $concierge = () => {
   const {
@@ -72,6 +78,18 @@ export const $concierge = () => {
     );
   };
 
+  const addCronJob = (
+    name: string,
+    processor: () => Promise<void>,
+    schedule: RepeatOptions
+  ) => {
+    cronJobs.push({
+      name,
+      processor,
+      schedule,
+    });
+  };
+
   /**
    * Returns the a queue by name. If queue is not found, it will return undefined but log a warning.
    *
@@ -87,11 +105,17 @@ export const $concierge = () => {
     return queue;
   };
 
+  const getCronJob = (name: string) => {
+    return cronJobs.find((cronJob) => cronJob.name === name);
+  };
+
   return {
     queues,
     workers,
     createQueue,
     createWorker,
     getQueue,
+    addCronJob,
+    getCronJob,
   };
 };

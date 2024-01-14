@@ -34,6 +34,7 @@ const methodFactory = (
 export const createTemplateNuxtPlugin = (
   queues: string[],
   workers: string[],
+  cron: string[],
   adhocQueues: string[],
   moduleName: string
 ) => {
@@ -43,11 +44,44 @@ import { defineNitroPlugin } from "#imports";
 import { $concierge } from "#concierge";
 ${importFiles(queues, "queue")}
 ${importFiles(workers, "worker")}
-        
+${importFiles(cron, "cron")}
+
+const cronWorkerProcessor = async (job) => {
+  const { getCronJob } = $concierge();
+  const { name } = job.data;
+
+  const cronJob = getCronJob(name);
+
+  return await cronJob.processor();  
+}
+
 export default defineNitroPlugin(async (nitroApp) => {
     const logger = useLogger("${moduleName}");
-    const { workers, createQueue, createWorker } = $concierge();
+    const { workers, createQueue, createWorker, getQueue, addCronJob } = $concierge();
     
+    // CRON Queue
+    createQueue("CRON");
+
+    // CRON Worker
+    createWorker("CRON", cronWorkerProcessor)
+
+    // Add CRON Jobs      
+    ${methodFactory(cron, "addCronJob", "cron", [
+      "name",
+      "processor",
+      "schedule",
+    ])}            
+    
+    ${cron.map((_cron, i) => {
+      return `
+    const cronQueue = getQueue("CRON");
+
+    cronQueue.add(cron${i}.name, { name: cron${i}.name }, {
+      repeat: cron${0}.schedule
+    })
+      `;
+    })}
+
     // Queues
     ${methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
     

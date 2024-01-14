@@ -77,8 +77,9 @@ export default defineNuxtModule<ModuleOptions>({
 
     const workers = await scanFolder("server/concierge/workers");
     const queues = await scanFolder("server/concierge/queues");
+    const cronJobs = await scanFolder("server/concierge/cron");
 
-    createTemplateNuxtPlugin(queues, workers, options.queues, name);
+    createTemplateNuxtPlugin(queues, workers, cronJobs, options.queues, name);
     createTemplateType();
 
     if (nuxt.options.dev) {

@@ -1,5 +1,5 @@
 import { defineWorker } from "#imports";
 
-export default defineWorker("MyWorker", async (job) => {
+export default defineWorker("SendEmail", async (job) => {
   // Do something
 });
