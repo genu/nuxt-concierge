@@ -50,12 +50,14 @@ export const $concierge = () => {
       enableOfflineQueue: false,
     };
 
-    queues.push(
-      new Queue(name, {
-        connection: { ...redisOptions, ...defaultConnectionOptions },
-        ...opts,
-      })
-    );
+    const queue = new Queue(name, {
+      connection: { ...redisOptions, ...defaultConnectionOptions },
+      ...opts,
+    });
+
+    queues.push(queue);
+
+    return queue;
   };
 
   const createWorker = (
@@ -68,14 +70,16 @@ export const $concierge = () => {
       maxRetriesPerRequest: null,
     };
 
-    workers.push(
-      new Worker(name, processor, {
-        connection: { ...redisOptions, ...defaultConnectionOptions },
-        ...opts,
-      }).on("closed", () => {
-        logger.info(`Worker ${name} stopped`);
-      })
-    );
+    const worker = new Worker(name, processor, {
+      connection: { ...redisOptions, ...defaultConnectionOptions },
+      ...opts,
+    }).on("closed", () => {
+      logger.info(`Worker ${name} stopped`);
+    });
+
+    workers.push(worker);
+
+    return worker;
   };
 
   const addCronJob = (

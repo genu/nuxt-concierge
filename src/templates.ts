@@ -60,7 +60,10 @@ export default defineNitroPlugin(async (nitroApp) => {
     const { workers, createQueue, createWorker, getQueue, addCronJob } = $concierge();
     
     // CRON Queue
-    createQueue("CRON");
+    const cronQueue = createQueue("CRON");
+
+    // Empty the cron queue
+    await cronQueue.obliterate();
 
     // CRON Worker
     createWorker("CRON", cronWorkerProcessor)
@@ -74,8 +77,6 @@ export default defineNitroPlugin(async (nitroApp) => {
     
     ${cron.map((_cron, i) => {
       return `
-    const cronQueue = getQueue("CRON");
-
     cronQueue.add(cron${i}.name, { name: cron${i}.name }, {
       repeat: cron${0}.schedule
     })
