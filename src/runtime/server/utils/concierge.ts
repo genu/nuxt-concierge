@@ -72,8 +72,20 @@ export const $concierge = () => {
     );
   };
 
-  const getQueue = (name: string) =>
-    queues.find((queue) => queue.name === name);
+  /**
+   * Returns the a queue by name. If queue is not found, it will return undefined but log a warning.
+   *
+   * @param name Name of the queue
+   */
+  const getQueue = (name: string) => {
+    const queue = queues.find((queue) => queue.name === name)!;
+
+    if (!queue) {
+      logger.warn(`Queue ${name} not found`);
+    }
+
+    return queue;
+  };
 
   return {
     queues,
