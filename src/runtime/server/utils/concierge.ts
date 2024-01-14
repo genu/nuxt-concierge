@@ -72,10 +72,14 @@ export const $concierge = () => {
     );
   };
 
+  const getQueue = (name: string) =>
+    queues.find((queue) => queue.name === name);
+
   return {
     queues,
     workers,
     createQueue,
     createWorker,
+    getQueue,
   };
 };

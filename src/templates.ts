@@ -5,7 +5,7 @@ import {
   useNuxt,
 } from "@nuxt/kit";
 
-export const importFiles = (files: string[], prefix: string = "file") =>
+const importFiles = (files: string[], prefix: string = "file") =>
   files
     .map(
       (file, index) =>
@@ -13,7 +13,7 @@ export const importFiles = (files: string[], prefix: string = "file") =>
     )
     .join("\n");
 
-export const methodFactory = (
+const methodFactory = (
   input: any[],
   methodName: string,
   importedKey: string,
