@@ -57,12 +57,14 @@ const cronWorkerProcessor = async (job) => {
 
 export default defineNitroPlugin(async (nitroApp) => {
     const logger = useLogger("${moduleName}");
-    const { workers, createQueue, createWorker, getQueue, addCronJob } = $concierge();
+    const { workers, createQueue, createWorker, addCronJob } = $concierge();
     
     // CRON Queue
-    const cronQueue = createQueue("CRON");    
+    const cronQueue = createQueue("CRON");
 
-    // CRON Worker
+    // Remove old cron jobs
+    await cronQueue.clean(60000, 50, 'delayed');
+
     createWorker("CRON", cronWorkerProcessor)
 
     // Add CRON Jobs      
