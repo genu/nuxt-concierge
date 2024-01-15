@@ -104,7 +104,7 @@ export default defineNitroPlugin(async (nitroApp) => {
   `;
 
   addTemplate({
-    filename: "concierge-nuxt-plugin.ts",
+    filename: "0.concierge-nuxt-plugin.ts",
     write: true,
     getContents: () => nitroPlugin,
   });
