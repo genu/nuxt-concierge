@@ -63,7 +63,7 @@ export default defineNitroPlugin(async (nitroApp) => {
     const cronQueue = createQueue("CRON");
 
     // Remove old cron jobs
-    await cronQueue.clean(60000, 50, 'delayed');
+    await cronQueue.obliterate()
 
     createWorker("CRON", cronWorkerProcessor)
 
