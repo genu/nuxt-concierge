@@ -52,7 +52,7 @@ const cronWorkerProcessor = async (job) => {
 
   const cronJob = getCronJob(name);
 
-  return await cronJob.processor();  
+  return await cronJob.processor(job);  
 }
 
 export default defineNitroPlugin(async (nitroApp) => {
