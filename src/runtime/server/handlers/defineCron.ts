@@ -1,8 +1,8 @@
-import type { RepeatOptions } from "bullmq";
+import type { Job, RepeatOptions } from "bullmq";
 
 export const defineCron = (
   name: string,
-  processor: () => Promise<any>,
+  processor: (job: Job) => Promise<any>,
   schedule: RepeatOptions
 ) => {
   return {
