@@ -4,7 +4,7 @@ import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
 import { useRuntimeConfig } from "#imports";
 import { $concierge } from "#concierge";
-import { useLogger } from "@nuxt/kit";
+import { consola } from "consola";
 
 const {
   concierge: { ui, managementUI },
@@ -24,7 +24,7 @@ const bullboard = createBullBoard({
 const uiRouter = serverAdapter.registerHandlers();
 
 export default defineEventHandler(async (event) => {
-  const logger = useLogger("nuxt-concierge");
+  const logger = consola.create({}).withTag("nuxt-concierge");
 
   if (!managementUI) {
     logger.warn("Concierge is disabled");

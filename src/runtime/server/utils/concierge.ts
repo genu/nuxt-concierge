@@ -1,5 +1,5 @@
 import { Queue, Worker } from "bullmq";
-import { useLogger } from "@nuxt/kit";
+import { consola } from "consola";
 
 import type {
   WorkerOptions,
@@ -11,7 +11,7 @@ import type {
 } from "bullmq";
 import { useRuntimeConfig } from "#imports";
 
-const logger = useLogger("nuxt-concierge");
+const logger = consola.create({}).withTag("nuxt-concierge");
 
 const queues: Queue[] = [];
 const workers: Worker[] = [];
