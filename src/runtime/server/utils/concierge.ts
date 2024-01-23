@@ -113,6 +113,10 @@ export const $concierge = () => {
     return cronJobs.find((cronJob) => cronJob.name === name);
   };
 
+  const getConnectionOptions = (): ConnectionOptions => {
+    return { host, password, port };
+  };
+
   return {
     queues,
     workers,
@@ -121,5 +125,6 @@ export const $concierge = () => {
     getQueue,
     addCronJob,
     getCronJob,
+    getConnectionOptions,
   };
 };
