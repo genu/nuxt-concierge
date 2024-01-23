@@ -1,6 +1,10 @@
 # Changelog
 
 
+## v1.0.46
+
+[compare changes](https://github.com/genu/nuxt-concierge/compare/v1.0.45...v1.0.46)
+
 ## v1.0.45
 
 [compare changes](https://github.com/genu/nuxt-concierge/compare/v1.0.44...v1.0.45)
