@@ -125,7 +125,8 @@ export default defineCron(
     // Run a daily report
   },
   {
-    every: "0 0 * * *", // every day at midnight
+    every: 43200000, // 12 hours
+    immediately: true,
   }
 );
 ```
