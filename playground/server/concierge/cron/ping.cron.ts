@@ -1,4 +1,4 @@
-import { defineCron } from "#imports";
+import { defineCron } from "#concierge-handlers";
 
 export default defineCron(
   "PingServer",

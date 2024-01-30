@@ -51,8 +51,8 @@ export default defineNuxtModule<ModuleOptions>({
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
 
-    addServerImportsDir(resolve("./runtime/server/utils"));
-    addServerImportsDir(resolve("./runtime/server/handlers"));
+    // addServerImportsDir(resolve("./runtime/server/utils"));
+    // addServerImportsDir(resolve("./runtime/server/handlers"));
 
     // Test Redis connection
     const canConnect = await isValidRedisConnection(options.redis);
