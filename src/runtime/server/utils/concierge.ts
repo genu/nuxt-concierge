@@ -21,7 +21,7 @@ const cronJobs: {
   schedule: RepeatOptions;
 }[] = [];
 
-export const $concierge = () => {
+export const $useConcierge = () => {
   const {
     concierge: {
       redis: { host, password, port },

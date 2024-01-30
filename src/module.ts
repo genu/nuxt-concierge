@@ -93,7 +93,7 @@ export default defineNuxtModule<ModuleOptions>({
     }
 
     nuxt.options.runtimeConfig.concierge = defu(
-      nuxt.options.runtimeConfig.concierge as ModuleOptions,
+      nuxt.options.runtimeConfig.concierge,
       options
     );
 

@@ -1,4 +1,4 @@
-import { defineQueue } from "#concierge";
+import { defineQueue } from "#imports";
 
 export default defineQueue("SendEmail", {
   defaultJobOptions: {

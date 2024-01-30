@@ -3,7 +3,8 @@ import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
 import { useRuntimeConfig } from "#imports";
-import { $concierge } from "#concierge";
+import { $useConcierge } from "#concierge";
+
 import { consola } from "consola";
 
 const {
@@ -33,7 +34,7 @@ export default defineEventHandler(async (event) => {
     return "";
   }
 
-  const { queues } = $concierge();
+  const { queues } = $useConcierge();
 
   bullboard.replaceQueues(queues.map((queue) => new BullMQAdapter(queue)));
 
