@@ -120,6 +120,10 @@ export const createTemplateType = () => {
     nitroConfig.alias["#concierge"] = resolve(
       "./runtime/server/utils/concierge"
     );
+
+    nitroConfig.alias["#concierge-handlers"] = resolve(
+      "./runtime/server/utils/handlers"
+    );
   });
 
   addTypeTemplate({
