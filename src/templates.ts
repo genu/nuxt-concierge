@@ -126,25 +126,25 @@ export const createTemplateType = () => {
     );
   });
 
-  addTypeTemplate({
-    filename: "types/concierge-handlers.d.ts",
-    write: true,
-    getContents() {
-      return `
-  declare module "#concierge-handlers" {
-   const defineQueue: typeof import("${resolve(
-     "./runtime/server/handlers/defineQueue"
-   )}").defineQueue;
-   const defineWorker: typeof import("${resolve(
-     "./runtime/server/handlers/defineWorker"
-   )}").defineWorker;
-   const defineCron: typeof import("${resolve(
-     "./runtime/server/handlers/defineCron"
-   )}").defineCron; 
-  }
-      `;
-    },
-  });
+  // addTypeTemplate({
+  //   filename: "types/concierge-handlers.d.ts",
+  //   write: true,
+  //   getContents() {
+  //     return `
+  // declare module "#concierge-handlers" {
+  //  const defineQueue: typeof import("${resolve(
+  //    "./runtime/server/handlers/defineQueue"
+  //  )}").defineQueue;
+  //  const defineWorker: typeof import("${resolve(
+  //    "./runtime/server/handlers/defineWorker"
+  //  )}").defineWorker;
+  //  const defineCron: typeof import("${resolve(
+  //    "./runtime/server/handlers/defineCron"
+  //  )}").defineCron;
+  // }
+  //     `;
+  //   },
+  // });
 
   addTypeTemplate({
     filename: "types/concierge.d.ts",
