@@ -122,8 +122,28 @@ export const createTemplateType = () => {
     );
 
     nitroConfig.alias["#concierge-handlers"] = resolve(
-      "./runtime/server/utils/handlers/index"
+      "./runtime/server/utils/handlers"
     );
+  });
+
+  addTypeTemplate({
+    filename: "types/concierge-handlers.d.ts",
+    write: true,
+    getContents() {
+      return `
+  declare module "#concierge-handlers" {
+   const defineQueue: typeof import("${resolve(
+     "./runtime/server/handlers/defineQueue"
+   )}").defineQueue;
+   const defineWorker: typeof import("${resolve(
+     "./runtime/server/handlers/defineWorker"
+   )}").defineWorker;
+   const defineCron: typeof import("${resolve(
+     "./runtime/server/handlers/defineCron"
+   )}").defineCron; 
+  }
+      `;
+    },
   });
 
   addTypeTemplate({
