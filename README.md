@@ -139,10 +139,10 @@ Cron jobs are placed in a special queue called `CRON`. This queue is automatical
 To access queues, a `getQueue` helper is provided.
 
 ```ts
-import { $concierge } from "#concierge";
+import { $useConcierge } from "#concierge";
 
 export default defineEventHandler(async (event) => {
-  const { getQueue } = $concierge();
+  const { getQueue } = $useConcierge();
   const emailQueue = getQueue("SendEmail");
 
   await emailQueue.add("sendWelcomeEmail", { to: "customer@helloworld.com" });

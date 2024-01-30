@@ -41,13 +41,13 @@ export const createTemplateNuxtPlugin = (
   const nitroPlugin = `
 import { consola } from "consola";
 import { defineNitroPlugin } from "#imports";
-import { $concierge } from "#concierge";
+import { $useConcierge } from "#concierge";
 ${importFiles(queues, "queue")}
 ${importFiles(workers, "worker")}
 ${importFiles(cron, "cron")}
 
 const cronWorkerProcessor = async (job) => {
-  const { getCronJob } = $concierge();
+  const { getCronJob } = $useConcierge();
   const { name } = job.data;
 
   const cronJob = getCronJob(name);
@@ -57,7 +57,7 @@ const cronWorkerProcessor = async (job) => {
 
 export default defineNitroPlugin(async (nitroApp) => {
     const logger = consola.create({}).withTag("${moduleName}")
-    const { workers, createQueue, createWorker, addCronJob } = $concierge();
+    const { workers, createQueue, createWorker, addCronJob } = $useConcierge();
     
     // CRON Queue
     const cronQueue = createQueue("CRON");

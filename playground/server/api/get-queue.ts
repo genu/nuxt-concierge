@@ -1,8 +1,8 @@
 import { defineEventHandler } from "h3";
-import { $concierge } from "#concierge";
+import { $useConcierge } from "#concierge";
 
 export default defineEventHandler(async () => {
-  const { getQueue } = $concierge();
+  const { getQueue } = $useConcierge();
   const q = getQueue("myQueue");
 
   await q.add("myJob", { foo: "bar" });
