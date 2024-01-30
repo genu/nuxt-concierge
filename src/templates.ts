@@ -118,21 +118,21 @@ export const createTemplateType = () => {
     if (!nitroConfig.alias) return;
 
     nitroConfig.alias["#concierge"] = resolve(
-      "./runtime/server/utils/concierge"
+      "./runtime/server/handlers/index"
     );
   });
 
-  addTypeTemplate({
-    filename: "types/concierge.d.ts",
-    write: true,
-    getContents() {
-      return `
-declare module "#concierge" {
-  const $concierge: typeof import("${resolve(
-    "./runtime/server/utils/concierge"
-  )}").$concierge;
-}
-`;
-    },
-  });
+//   addTypeTemplate({
+//     filename: "types/concierge.d.ts",
+//     write: true,
+//     getContents() {
+//       return `
+// declare module "#concierge" {
+//   const $concierge: typeof import("${resolve(
+//     "./runtime/server/utils/concierge"
+//   )}").$concierge;
+// }
+// `;
+//     },
+//   });
 };
