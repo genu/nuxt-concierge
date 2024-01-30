@@ -13,10 +13,10 @@ useHead({
   },
 });
 
-useSeoMeta({
-  ogSiteName: seo?.siteName,
-  twitterCard: "summary_large_image",
-});
+// useSeoMeta({
+//   ogSiteName: seo?.siteName,
+//   twitterCard: "summary_large_image",
+// });
 
 provide("navigation", navigation);
 </script>

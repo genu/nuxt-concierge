@@ -36,19 +36,19 @@ const { header } = useAppConfig();
         class="lg:hidden"
       />
 
-      <UColorModeButton v-if="header?.colorMode" />
+      <!-- <UColorModeButton v-if="header?.colorMode" /> -->
 
-      <template v-if="header?.links">
+      <!-- <template v-if="header?.links">
         <UButton
           v-for="(link, index) of header.links"
           :key="index"
           v-bind="{ color: 'gray', variant: 'ghost', ...link }"
         />
-      </template>
+      </template> -->
     </template>
 
     <template #panel>
-      <UNavigationTree :links="mapContentNavigation(navigation)" />
+      <!-- <UNavigationTree :links="mapContentNavigation(navigation)" /> -->
     </template>
   </UHeader>
 </template>

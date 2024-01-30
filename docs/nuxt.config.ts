@@ -13,11 +13,11 @@ export default defineNuxtConfig({
       globals.forEach((c) => (c.global = true));
     },
   },
-  googleFonts: {
-    display: "swap",
-    download: true,
-    families: {
-      "DM+Sans": [400, 500, 600, 700],
-    },
-  },
+  // googleFonts: {
+  //   display: "swap",
+  //   download: true,
+  //   families: {
+  //     "DM+Sans": [400, 500, 600, 700],
+  //   },
+  // },
 });

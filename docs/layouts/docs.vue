@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { NavItem } from "@nuxt/content/dist/runtime/types";
+// import type { NavItem } from "@nuxt/content/dist/runtime/types";
 
-const navigation = inject<Ref<NavItem[]>>("navigation");
+// const navigation = inject<Ref<NavItem[]>>("navigation");
 </script>
 
 <template>
@@ -9,7 +9,7 @@ const navigation = inject<Ref<NavItem[]>>("navigation");
     <UPage>
       <template #left>
         <UAside>
-          <UNavigationTree :links="mapContentNavigation(navigation)" />
+          <!-- <UNavigationTree :links="mapContentNavigation(navigation)" /> -->
         </UAside>
       </template>
       <slot />
