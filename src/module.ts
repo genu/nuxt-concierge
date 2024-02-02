@@ -3,7 +3,6 @@ import {
   useLogger,
   createResolver,
   addServerPlugin,
-  addServerImportsDir,
   addServerHandler,
 } from "@nuxt/kit";
 import pluralize from "pluralize";
@@ -51,15 +50,13 @@ export default defineNuxtModule<ModuleOptions>({
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
 
-    // addServerImportsDir(resolve("./runtime/server/utils"));
-    // addServerImportsDir(resolve("./runtime/server/handlers"));
+    if (nuxt.options._start || nuxt.options.dev) {
+      const canConnect = await isValidRedisConnection(options.redis);
 
-    // Test Redis connection
-    const canConnect = await isValidRedisConnection(options.redis);
-
-    if (!canConnect) {
-      logger.error(`Unable to connect to Redis instance`);
-      return;
+      if (!canConnect) {
+        logger.error(`Unable to connect to Redis instance`);
+        return;
+      }
     }
 
     // Add Server handlers for UI
