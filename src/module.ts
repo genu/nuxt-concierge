@@ -91,6 +91,8 @@ export default defineNuxtModule<ModuleOptions>({
 
     // Transpile BullBoard api because its not ESM
     nuxt.options.build.transpile.push("@bull-board/api");
+    nuxt.options.build.transpile.push("@bull-board/h3");
+    nuxt.options.build.transpile.push("@bull-board/ui");
 
     nuxt.options.runtimeConfig.concierge = defu(
       nuxt.options.runtimeConfig.concierge,

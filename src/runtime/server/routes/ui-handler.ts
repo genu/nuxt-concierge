@@ -5,29 +5,23 @@ import { H3Adapter } from "@bull-board/h3";
 import { useRuntimeConfig } from "#imports";
 import { $useConcierge } from "#concierge";
 import { consola } from "consola";
-
-const {
-  concierge: { ui, managementUI },
-} = useRuntimeConfig();
+import { resolvePath } from "mlly";
+import { dirname } from "pathe";
 
 const serverAdapter = new H3Adapter();
 serverAdapter.setBasePath("/_concierge");
 
-const root = import.meta.dev ? "../" : "../../";
-
-const bullboard = createBullBoard({
-  queues: [],
-  serverAdapter,
-  options: {
-    uiBasePath: `${root}node_modules/@bull-board/ui`,
-    uiConfig: ui,
-  },
-});
-
-const uiRouter = serverAdapter.registerHandlers();
-
 export default defineEventHandler(async (event) => {
+  const {
+    concierge: { ui, managementUI },
+  } = useRuntimeConfig();
+
   const logger = consola.create({}).withTag("nuxt-concierge");
+  const uiPath = dirname(
+    await resolvePath("@bull-board/ui/package.json", {
+      url: import.meta.url,
+    })
+  );
 
   if (!managementUI) {
     logger.warn("Concierge is disabled");
@@ -38,7 +32,16 @@ export default defineEventHandler(async (event) => {
 
   const { queues } = $useConcierge();
 
-  bullboard.replaceQueues(queues.map((queue) => new BullMQAdapter(queue)));
+  createBullBoard({
+    queues: queues.map((queue) => new BullMQAdapter(queue)),
+    serverAdapter,
+    options: {
+      uiBasePath: uiPath,
+      uiConfig: ui,
+    },
+  });
+
+  const uiRouter = serverAdapter.registerHandlers();
 
   return uiRouter.handler(event);
 });
