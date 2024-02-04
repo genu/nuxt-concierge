@@ -4,7 +4,6 @@ import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { H3Adapter } from "@bull-board/h3";
 import { useRuntimeConfig } from "#imports";
 import { $useConcierge } from "#concierge";
-
 import { consola } from "consola";
 
 const {
@@ -14,10 +13,13 @@ const {
 const serverAdapter = new H3Adapter();
 serverAdapter.setBasePath("/_concierge");
 
+const root = import.meta.dev ? "../" : "../../";
+
 const bullboard = createBullBoard({
   queues: [],
   serverAdapter,
   options: {
+    uiBasePath: `${root}node_modules/@bull-board/ui`,
     uiConfig: ui,
   },
 });

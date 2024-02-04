@@ -37,6 +37,7 @@
   "dependencies": {
     "@bull-board/api": "^5.14.0",
     "@bull-board/h3": "^5.14.0",
+    "@bull-board/ui": "^5.14.0",
     "@nuxt/kit": "^3.10.0",
     "bullmq": "^5.1.8",
     "colorette": "^2.0.20",
