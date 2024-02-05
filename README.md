@@ -41,12 +41,23 @@ export default defineNuxtConfig({
   concierge: {
     redis: {
       host: "localhost",
+      port: 6379,
+      password: "",
     },
   },
 });
 ```
 
-**Note**: A redis connetion **is required** for this module to work. A connection test is done during module startup, and an error is raised if a connection cannot be established.
+Use the `redis` option to configure the redis connection, or use the `redis` environment variables:
+
+```bash
+
+NUXT_REDIS_HOST='localhost'
+NUXT_REDIS_PORT=6379
+NUXT_REDIS_PASSWORD=''
+```
+
+**Note**: A redis connetion **is required** for this module to work.
 
 ## Usage
 

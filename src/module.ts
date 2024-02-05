@@ -39,9 +39,9 @@ export default defineNuxtModule<ModuleOptions>({
       boardTitle: "Concierge",
     },
     redis: {
-      host: "localhost",
-      port: 6379,
-      password: "",
+      host: process.env.NUXT_REDIS_HOST,
+      port: Number(process.env.NUXT_REDIS_PORT),
+      password: process.env.NUXT_REDIS_PASSWORD,
     },
     queues: [],
     managementUI: process.env.NODE_ENV === "development",
