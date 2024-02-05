@@ -17,7 +17,7 @@ import {
   joinURL,
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
-import { isValidRedisConnection, scanFolder } from "./helplers";
+import { scanFolder } from "./helplers";
 import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
 
 export interface ModuleOptions {
@@ -49,15 +49,6 @@ export default defineNuxtModule<ModuleOptions>({
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
-
-    if (nuxt.options._start || nuxt.options.dev) {
-      const canConnect = await isValidRedisConnection(options.redis);
-
-      if (!canConnect) {
-        logger.error(`Unable to connect to Redis instance`);
-        return;
-      }
-    }
 
     // Add Server handlers for UI
     addServerHandler({
