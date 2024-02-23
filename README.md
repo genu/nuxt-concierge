@@ -52,9 +52,9 @@ Use the `redis` option to configure the redis connection, or use the `redis` env
 
 ```bash
 
-NUXT_REDIS_HOST='localhost'
-NUXT_REDIS_PORT=6379
-NUXT_REDIS_PASSWORD=''
+NUXT_CONCIERGE_REDIS_HOST='localhost'
+NUXT_CONCIERGE_REDIS_PORT=6379
+NUXT_CONCIERGE_REDIS_PASSWORD=''
 ```
 
 **Note**: A redis connetion **is required** for this module to work.
