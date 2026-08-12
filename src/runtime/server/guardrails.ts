@@ -36,8 +36,11 @@ export const guardrailDiagnostics = (input: GuardrailInput): Diagnostic[] => {
     out.push({
       level: 'error',
       message:
-        `The "${input.driverName}" driver keeps state in-process, so it cannot be used with role "${input.role}". `
-        + `Use role "both" (a single process), or switch to a driver that works across processes, such as bullmq.`,
+        `The "${input.driverName}" driver keeps state in-process, so it cannot be used with role "${input.role}": `
+        + `a "${input.role}" process cannot see jobs enqueued or run by any other process. Fix this by either (1) `
+        + `setting role: 'both' in your concierge config, or CONCIERGE_ROLE=both in the environment (the usual `
+        + `place role comes from in a deployed process), to run a single combined process, or (2) switching to a `
+        + `driver that works across processes, such as bullmq.`,
     })
   }
 

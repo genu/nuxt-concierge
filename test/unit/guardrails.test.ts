@@ -29,6 +29,25 @@ describe('guardrails', () => {
     })).toThrow(/memory.*cannot be used with role "worker"/)
   })
 
+  it('rule 1 message names the driver, the offending role, and both escapes', () => {
+    // Actionable from the message alone: CONCIERGE_ROLE is called out
+    // specifically because in a deployed setting that is where role usually
+    // comes from, not the config file.
+    const d = guardrailDiagnostics({
+      ...base,
+      role: 'worker',
+      driverName: 'memory',
+      capabilities: { persistent: false, crossProcess: false },
+    })
+    const fatal = d.find(x => x.level === 'error')
+    expect(fatal).toBeDefined()
+    expect(fatal?.message).toMatch(/"memory"/)
+    expect(fatal?.message).toMatch(/role "worker"/)
+    expect(fatal?.message).toMatch(/role:\s*'both'/)
+    expect(fatal?.message).toMatch(/CONCIERGE_ROLE=both/)
+    expect(fatal?.message).toMatch(/bullmq/)
+  })
+
   it('allows a non-crossProcess driver under role: both', () => {
     expect(() => checkGuardrails({
       ...base,
