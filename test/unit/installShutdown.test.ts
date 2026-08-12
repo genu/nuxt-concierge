@@ -18,7 +18,7 @@ const fakeSupervisor = (shutdownTimeout: number, consumers: ReturnType<typeof fa
   config: { worker: { shutdownTimeout } },
   setState: vi.fn(),
   getState: vi.fn(() => 'draining' as const),
-  stopHeartbeat: vi.fn(),
+  stopHeartbeat: vi.fn(async () => {}),
 })
 
 type FakeSupervisor = ReturnType<typeof fakeSupervisor>
@@ -160,22 +160,34 @@ describe('installShutdown', () => {
   })
 
   it('subtracts time already spent waiting for ready from the drain budget', async () => {
-    // shutdownTimeout is 100ms; ready resolves after ~60ms (a slow driver
-    // connect). Only ~40ms should be left for a consumer whose drain() takes
-    // 80ms, so it must be force-closed rather than closed cleanly. Under the
-    // bug this guards against — using the full configured timeout for
-    // runDrain regardless of time already spent awaiting `ready` — 100ms
-    // would comfortably cover an 80ms drain and this would close cleanly.
-    const c = fakeConsumer({ drainMs: 80 })
-    const supervisor = fakeSupervisor(100, [c])
+    // shutdownTimeout is 500ms; ready resolves after ~300ms (a slow driver
+    // connect). Only ~200ms should be left for a consumer whose drain() takes
+    // 400ms, so it must be force-closed almost immediately once that ~200ms
+    // remainder elapses, rather than waiting out the full 400ms drain.
+    //
+    // `c.close` being called with `true` is NOT a usable signal here: the
+    // clean path forces (close(true)) even when nothing timed out (see the
+    // comment at the call site in shutdown.ts), so that assertion passes
+    // identically whether or not this budget subtraction happens at all.
+    // Total close-hook DURATION is what actually distinguishes the two:
+    // under the bug this guards against — using the full configured timeout
+    // for runDrain regardless of time already spent awaiting `ready` — 500ms
+    // would comfortably cover the 300ms wait plus the full 400ms drain
+    // (~700ms total) and the hook would take that long instead of the
+    // ~500ms a correctly-subtracted budget produces.
+    const c = fakeConsumer({ drainMs: 400 })
+    const supervisor = fakeSupervisor(500, [c])
     const ready = new Promise<FakeSupervisor>((resolve) => {
-      setTimeout(() => resolve(supervisor), 60)
+      setTimeout(() => resolve(supervisor), 300)
     })
     const { app, closeHook } = fakeNitroApp()
 
     installShutdown(app as never, ready as never)
+    const started = Date.now()
     await closeHook()?.()
+    const elapsed = Date.now() - started
 
+    expect(elapsed).toBeLessThan(650)
     expect(c.close).toHaveBeenCalledWith(true)
   })
 })
