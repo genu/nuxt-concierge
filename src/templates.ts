@@ -19,9 +19,16 @@ const importFiles = (files: string[], prefix: string = "file") =>
  * register FIRST to drain jobs before a DB-pool plugin tears down connections
  * under a running handler.
  *
- * defineNitroPlugin is intentionally NOT imported: it is auto-injected via
- * #imports, and an explicit import breaks resolution for some setups
- * (notably Prisma).
+ * The default export is a bare async function, NOT wrapped in
+ * defineNitroPlugin. Two constraints collide here: importing
+ * `defineNitroPlugin` from "#imports" breaks module resolution for some
+ * setups (notably Prisma), but relying on it being auto-injected does not
+ * work for a file emitted into buildDir and registered via addServerPlugin —
+ * that produced a `defineNitroPlugin is not defined` ReferenceError at
+ * runtime in the actual built output. defineNitroPlugin has no runtime
+ * behaviour (nitro defines it as the identity function, purely for typing
+ * the argument), so dropping the wrapper entirely satisfies both constraints:
+ * nothing to import, nothing to resolve.
  */
 export const createTemplateNuxtPlugin = (
   jobFiles: string[],
@@ -50,7 +57,7 @@ const jobs = [
 ${registrations}
 ];
 
-export default defineNitroPlugin(async (nitroApp) => {
+export default async (nitroApp) => {
   const config = useRuntimeConfig().concierge;
 
   // Re-resolve from env at boot: the build artifact is shared across processes
@@ -83,7 +90,7 @@ export default defineNitroPlugin(async (nitroApp) => {
 
   await supervisor.startConsumers();
   installShutdown(nitroApp, supervisor);
-});
+};
   `;
 
   addTemplate({
