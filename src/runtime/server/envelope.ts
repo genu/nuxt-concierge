@@ -37,10 +37,19 @@ const isEnvelope = (value: unknown): value is Envelope =>
   && typeof (value as Envelope).v === 'number'
   && typeof (value as Envelope).payload === 'string'
 
+const safeStringify = (value: unknown): string => {
+  try {
+    return JSON.stringify(value)?.slice(0, 200) ?? 'unknown'
+  }
+  catch {
+    return String(value).slice(0, 200)
+  }
+}
+
 export const decodePayload = (envelope: unknown): unknown => {
   if (!isEnvelope(envelope)) {
     throw new UnsupportedEnvelopeError(
-      `Job payload is not a concierge envelope: ${JSON.stringify(envelope)?.slice(0, 200)}`,
+      `Job payload is not a concierge envelope: ${safeStringify(envelope)}`,
     )
   }
 
@@ -51,5 +60,12 @@ export const decodePayload = (envelope: unknown): unknown => {
     )
   }
 
-  return parse(envelope.payload)
+  try {
+    return parse(envelope.payload)
+  }
+  catch (err) {
+    throw new UnsupportedEnvelopeError(
+      `Envelope payload could not be decoded: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
 }
