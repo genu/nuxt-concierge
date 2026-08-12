@@ -117,45 +117,24 @@ export default defineConciergePlugin((nitroApp) => {
       packageVersion: config.version,
     });
 
-    // Same reasoning as CONCIERGE_ROLE above: the built artifact is shared
-    // across every lifecycle-test scenario (a single "pnpm dev:build"), but
-    // driver and the shutdown/stalled timeouts need to vary per spawned
-    // process. nuxt.config.ts's own process.env reads only supply the
-    // baked-in default from whatever env was present at build time; these
-    // three live reads are what let CONCIERGE_DRIVER / CONCIERGE_SHUTDOWN_TIMEOUT
-    // / CONCIERGE_STALLED_INTERVAL flip behaviour per process without a
-    // rebuild (see test/lifecycle/harness.ts).
-    const driver = process.env.CONCIERGE_DRIVER || config.driver;
-
-    const worker = {
-      ...config.worker,
-      shutdownTimeout:
-        Number(process.env.CONCIERGE_SHUTDOWN_TIMEOUT) || config.worker.shutdownTimeout,
-    };
-
-    const bullmq = {
-      ...config.bullmq,
-      stalledInterval:
-        Number(process.env.CONCIERGE_STALLED_INTERVAL) || config.bullmq.stalledInterval,
-    };
-
-    const supervisor = await createSupervisor({
-      ...config,
-      driver,
-      worker,
-      bullmq,
-      role,
-      jobs,
-      version,
-    });
+    // Driver and the shutdown/stalled timeouts do NOT need a bespoke env
+    // read the way CONCIERGE_ROLE and CONCIERGE_VERSION do: Nuxt already
+    // applies runtime env overrides to every runtimeConfig key using the
+    // NUXT_ prefix (NUXT_CONCIERGE_DRIVER, NUXT_CONCIERGE_WORKER_SHUTDOWN_TIMEOUT,
+    // NUXT_CONCIERGE_BULLMQ_STALLED_INTERVAL — see
+    // test/lifecycle/harness.ts), so config above already reflects
+    // whatever the current process was started with. A second, custom
+    // mechanism here would take silent precedence over the documented one
+    // with a different naming convention and no validation.
+    const supervisor = await createSupervisor({ ...config, role, jobs, version });
 
     checkGuardrails({
       role,
       capabilities: supervisor.driver.capabilities,
       driverName: supervisor.driver.name,
-      queueCount: Object.keys(worker.queues).length,
+      queueCount: Object.keys(config.worker.queues).length,
       isProduction: config.isProduction,
-      shutdownTimeout: worker.shutdownTimeout,
+      shutdownTimeout: config.worker.shutdownTimeout,
       nitroShutdownTimeout: Number(process.env.NITRO_SHUTDOWN_TIMEOUT) || 30000,
       nitroShutdownDisabled: Boolean(process.env.NITRO_SHUTDOWN_DISABLED),
       preset: config.preset,
@@ -174,11 +153,15 @@ export default defineConciergePlugin((nitroApp) => {
       "[nuxt-concierge] the supervisor failed to start; this process cannot enqueue or process jobs and is exiting",
       error
     );
-    // Guarded so a failure surfaced under a test runner does not kill the
-    // test process itself; production behaviour is unaffected.
-    if (!process.env.VITEST && process.env.NODE_ENV !== "test") {
-      process.exit(1);
-    }
+    // Unconditional: this generated plugin lives only in a template string
+    // emitted into buildDir and is never loaded by the unit suite (it is
+    // only ever executed inside a real, separately-spawned Nitro process),
+    // so there is nothing here that needs protecting from a test runner.
+    // A guarded exit previously let a real guardrail failure in a real
+    // deployed process keep serving traffic with no supervisor whenever
+    // that process happened to have VITEST or NODE_ENV=test set from its
+    // own toolchain.
+    process.exit(1);
   });
 
   return ready;

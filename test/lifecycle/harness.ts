@@ -10,6 +10,10 @@ export interface AppHandle {
   port: number
   logPath: string
   stop: () => void
+  /** Everything the child has written to stderr so far, e.g. to assert on a specific log line. */
+  getStderr: () => string
+  /** Everything the child has written to stdout so far. */
+  getStdout: () => string
 }
 
 export interface SpawnOptions {
@@ -22,6 +26,28 @@ export interface SpawnOptions {
 }
 
 const OUTPUT = 'playground/.output/server/index.mjs'
+
+/**
+ * Every process this file spawns, so a crash or a SIGINT to the vitest
+ * worker itself (not just a normal test failure, which `afterEach`/`finally`
+ * already handle) cannot leave one running. This is exactly the kind of
+ * pollution that cost real debugging time earlier: a leaked worker process
+ * kept consuming jobs from a shared Redis queue across separate,
+ * independent `pnpm test:lifecycle` invocations.
+ */
+const spawned = new Set<ChildProcess>()
+
+const killAll = () => {
+  for (const proc of spawned) {
+    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+  }
+  spawned.clear()
+}
+
+process.on('exit', killAll)
+
+/** Exposed so a test file's own `afterAll` can also invoke it as a belt-and-braces sweep. */
+export const killAllSpawned = killAll
 
 export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
   const port = opts.port ?? 3100 + Math.floor(Math.random() * 400)
@@ -38,37 +64,57 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       ...process.env,
       PORT: String(port),
       NITRO_PORT: String(port),
+      // CONCIERGE_ROLE is a first-class, documented, validated env var read
+      // directly by the generated plugin (src/runtime/server/role.ts throws
+      // on an invalid value) — it stays a bespoke read on purpose.
       CONCIERGE_ROLE: opts.role ?? 'both',
-      CONCIERGE_DRIVER: opts.driver ?? 'memory',
       CONCIERGE_TEST_LOG: logPath,
-      CONCIERGE_SHUTDOWN_TIMEOUT: String(opts.shutdownTimeout ?? 20_000),
-      CONCIERGE_STALLED_INTERVAL: String(opts.stalledInterval ?? 1000),
+      // Driver and the two timeouts are NOT bespoke env vars: Nuxt already
+      // applies runtime env overrides to `runtimeConfig.concierge.*` using
+      // the `NUXT_` prefix (verified against the built output's own
+      // `envPrefix: "NUXT_"`), so a per-process override needs no new,
+      // undocumented mechanism. Path: concierge.driver ->
+      // NUXT_CONCIERGE_DRIVER; concierge.worker.shutdownTimeout ->
+      // NUXT_CONCIERGE_WORKER_SHUTDOWN_TIMEOUT; concierge.bullmq.stalledInterval
+      // -> NUXT_CONCIERGE_BULLMQ_STALLED_INTERVAL.
+      NUXT_CONCIERGE_DRIVER: opts.driver ?? 'memory',
+      NUXT_CONCIERGE_WORKER_SHUTDOWN_TIMEOUT: String(opts.shutdownTimeout ?? 20_000),
+      NUXT_CONCIERGE_BULLMQ_STALLED_INTERVAL: String(opts.stalledInterval ?? 1000),
       // Keep Nitro's own budget above ours so it is not the limiting factor.
       NITRO_SHUTDOWN_TIMEOUT: '25000',
       NODE_ENV: 'production',
-      // The vitest worker process (this process) has VITEST=true in its own
-      // env. `...process.env` above inherits it, and the generated plugin's
-      // fatal-boot-error handler checks exactly this variable to avoid
-      // exiting an in-process unit test runner (see 0.concierge-nuxt-plugin.ts
-      // / src/templates.ts). Left set, a REAL guardrail failure in this real,
-      // separate child process would silently skip process.exit(1) and keep
-      // serving traffic with no supervisor — the guardrail test would then
-      // hang waiting for an exit that never comes. Node strips env keys
-      // whose value is `undefined` before spawning, so this genuinely
-      // removes it rather than passing the string "undefined".
+      // Defense in depth: the generated plugin no longer guards its fatal
+      // boot-error exit on this variable (that guard was removed — it was
+      // protecting a code path the unit suite never actually loads), but
+      // this spawned process is a real, separate one regardless, and
+      // stripping VITEST here costs nothing. Node strips env keys whose
+      // value is `undefined` before spawning.
       VITEST: undefined,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
-  proc.stdout?.on('data', d => process.env.HARNESS_DEBUG && console.log(`[app] ${d}`))
-  proc.stderr?.on('data', d => process.env.HARNESS_DEBUG && console.error(`[app] ${d}`))
+  spawned.add(proc)
+  proc.once('exit', () => spawned.delete(proc))
+
+  let stdout = ''
+  let stderr = ''
+  proc.stdout?.on('data', (d: Buffer) => {
+    stdout += d.toString()
+    if (process.env.HARNESS_DEBUG) console.log(`[app] ${d}`)
+  })
+  proc.stderr?.on('data', (d: Buffer) => {
+    stderr += d.toString()
+    if (process.env.HARNESS_DEBUG) console.error(`[app] ${d}`)
+  })
 
   return {
     proc,
     port,
     logPath,
     stop: () => { try { proc.kill('SIGKILL') } catch { /* already gone */ } },
+    getStdout: () => stdout,
+    getStderr: () => stderr,
   }
 }
 
@@ -131,6 +177,46 @@ export const waitForActiveCount = async (
 }
 
 /**
+ * Ignores 200s and keeps polling instead of returning the first response
+ * seen. A health check fired immediately after `kill('SIGTERM')` can race
+ * actual signal delivery to the child process and legitimately observe the
+ * OLD ("still running") state; treating that first 200 as final would make
+ * a caller's "must not still report healthy" assertion pass or fail on pure
+ * timing luck. Resolves with the first non-200 status seen. Throws if the
+ * process exits, or the timeout elapses, without ever producing one — both
+ * are real outcomes for the caller to see, not silently swallowed.
+ */
+export const waitForNonHealthyResponse = async (app: AppHandle, timeoutMs = 5_000): Promise<number> => {
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    if (app.proc.exitCode !== null) {
+      throw new Error(`app exited (code ${app.proc.exitCode}) before reporting anything other than 200`)
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${app.port}/_concierge/health`)
+      if (res.status !== 200) return res.status
+    }
+    catch { /* connection reset/refused: retry, do not treat as a final answer */ }
+    await new Promise(r => setTimeout(r, 25))
+  }
+
+  throw new Error(`still reporting 200 (or unreachable without exiting) after ${timeoutMs}ms`)
+}
+
+/**
+ * Points lifecycle tests at a dedicated Redis logical database rather than
+ * whatever database the supplied REDIS_URL defaults to (0). `flushRedis`
+ * below runs `FLUSHDB`, which would otherwise wipe an operator's real data
+ * on a shared, non-ephemeral Redis. Call this once, before anything reads
+ * REDIS_URL to build or spawn — the URL is rewritten in place so every
+ * consumer (the build, `flushRedis`, and every spawned app, since the
+ * connection URL is threaded through unchanged) agrees on the same
+ * isolated database.
+ */
+export const namespaceRedisUrl = (url: string, db = 15): string => `${url.replace(/\/\d+$/, '')}/${db}`
+
+/**
  * Lifecycle scenarios deliberately crash processes mid-job (SIGKILL, forced
  * close), leaving BullMQ state (locked/active entries, stalled jobs) behind
  * in Redis. Every bullmq scenario shares the same queue name
@@ -139,6 +225,9 @@ export const waitForActiveCount = async (
  * by the next scenario's fresh process — corrupting that scenario's own
  * completed/duplicate counts. A no-op when REDIS_URL is unset so memory-only
  * runs (the common contributor path, no Redis required) pay nothing.
+ *
+ * Only ever flushes the database selected by REDIS_URL's own path segment
+ * (see `namespaceRedisUrl`), never the operator's default database.
  */
 export const flushRedis = async (): Promise<void> => {
   const url = process.env.REDIS_URL
