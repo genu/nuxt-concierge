@@ -146,22 +146,37 @@ export const runDrain = async (
       abandoned = await forceCloseAndLog(consumers, remaining, `Shutdown exceeded ${timeout}ms;`)
     }
     else {
-      // 5. Clean path — also bounded, for the same reason as above. This can
-      // itself blow the budget: drain() only polls each driver's own
-      // in-processor `active` map, so a job fetched but not yet dispatched
-      // when worker.pause(true) lands leaves that map transiently empty —
-      // drain() returns, drainFailed is false, and close(false) then blocks
-      // on that very job. Treat that exactly like a timed-out/rejected
-      // drain: force-close and report the abandoned IDs, rather than logging
-      // a "drained cleanly" line that isn't true.
+      // 5. Clean path. Forces (close(true)) even though nothing failed:
+      // drain() resolving already guarantees every consumer's in-flight
+      // count hit zero, so a graceful close has nothing left to wait for and
+      // forcing here cannot abandon real work. It also makes BullMQ's
+      // Worker.close() de-dupe (`if (this.closing) return this.closing`)
+      // unreachable by construction, rather than merely handled: a
+      // close(false) here that itself blew the budget used to fall back to
+      // a "force" close(true), but BullMQ just handed back the original
+      // close(false) promise and silently discarded that `force`, so
+      // shutdown hung anyway until Nitro's own timeout killed the process.
+      // Do not "fix" this back to close(false) — see the timedOut branch
+      // below for why a fallback force-close can no longer help either.
       const cleanClose = await withDeadline(
-        Promise.allSettled(consumers.map(c => c.close(false))).then(() => undefined),
+        Promise.allSettled(consumers.map(c => c.close(true))).then(() => undefined),
         remaining(),
       )
 
       if (cleanClose.timedOut) {
+        // The close call above is already forcing, so a second "fallback"
+        // close(true) would hit the exact same de-dupe and hand back the
+        // very same stuck promise — it could never do additional work here.
+        // This branch can therefore only fire when the close call itself is
+        // stuck (e.g. a blackholed Redis connection teardown), never on
+        // abandoned job work, so there is nothing left to force a second
+        // time. Just report the timeout honestly.
         forced = true
-        abandoned = await forceCloseAndLog(consumers, remaining, `close(false) exceeded ${timeout}ms;`)
+        abandoned = consumers.flatMap(c => c.active())
+        logger.warn(
+          `close(true) exceeded ${timeout}ms; ${abandoned.length} job(s) still reported active. `
+          + `These are eligible for redelivery: ${abandoned.map(j => j.jobId).join(', ') || 'none'}`,
+        )
       }
       else {
         logger.info('Workers drained cleanly')

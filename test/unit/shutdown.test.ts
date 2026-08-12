@@ -9,15 +9,15 @@ const fakeConsumer = (opts: {
   pauseMs?: number
   active?: ActiveJob[]
   clearActiveOnForce?: boolean
-  /** How long a clean close(false) takes to resolve, independent of drain(). */
-  closeCleanMs?: number
+  /** How long a forced close(true) takes to resolve, independent of drain(). */
+  closeForceMs?: number
 } = {}) => {
   let active = opts.active ?? []
   return {
     pause: vi.fn(async () => { if (opts.pauseMs) await tick(opts.pauseMs) }),
     drain: vi.fn(async () => { await tick(opts.drainMs ?? 0) }),
     close: vi.fn(async (force: boolean) => {
-      if (!force && opts.closeCleanMs) await tick(opts.closeCleanMs)
+      if (force && opts.closeForceMs) await tick(opts.closeForceMs)
       if (force && opts.clearActiveOnForce) active = []
     }),
     activeCount: () => active.length,
@@ -46,31 +46,39 @@ describe('runDrain', () => {
       .toBeLessThan(c.drain.mock.invocationCallOrder[0]!)
   })
 
-  it('closes cleanly with force=false when the drain finishes in budget', async () => {
+  it('closes with force=true once the drain finishes cleanly in budget', async () => {
+    // The clean path forces (close(true)) even though nothing failed: see
+    // the comment at the call site in shutdown.ts for why forcing here is
+    // safe (drain() already guaranteed zero in-flight) and necessary
+    // (BullMQ's Worker.close() de-dupes concurrent calls, so a close(false)
+    // followed by a fallback close(true) would silently do nothing).
     const c = fakeConsumer({ drainMs: 10 })
     const s = fakeSupervisor([c])
 
     const outcome = await runDrain(s as never, { timeout: 500 })
 
     expect(outcome.forced).toBe(false)
-    expect(c.close).toHaveBeenCalledWith(false)
+    expect(c.close).toHaveBeenCalledWith(true)
     expect(outcome.abandoned).toEqual([])
   })
 
-  it('force-closes and reports abandoned jobs when a clean close(false) itself blows the budget', async () => {
-    // Simulates a job fetched but not yet dispatched when worker.pause(true)
-    // lands: the in-processor active map is transiently empty, so drain()
-    // resolves immediately and drainFailed is false — but the job is real,
-    // and close(false) then blocks on it past the shared deadline. The clean
-    // path must not report "drained cleanly" and silently drop the job ID.
+  it('reports forced and abandoned when the already-forcing clean close itself blows the budget', async () => {
+    // Once drain() resolves, the clean path only ever calls close(true) —
+    // so the only way this can still time out is the close call itself
+    // getting stuck (e.g. a blackholed Redis connection teardown), not job
+    // completion. A second "fallback" close(true) could never help here
+    // (BullMQ de-dupes it back to the same stuck promise), so assert there
+    // is no redundant second call, while the outcome still reports the
+    // timeout and the still-active job honestly.
     const active: ActiveJob[] = [{ jobId: 'j-42', queue: 'q0', name: 'slow', startedAt: 1 }]
-    const c = fakeConsumer({ drainMs: 0, active, clearActiveOnForce: true, closeCleanMs: 5000 })
+    const c = fakeConsumer({ drainMs: 0, active, closeForceMs: 5000 })
     const s = fakeSupervisor([c])
 
     const outcome = await runDrain(s as never, { timeout: 60 })
 
     expect(outcome.forced).toBe(true)
     expect(outcome.abandoned.map(j => j.jobId)).toEqual(['j-42'])
+    expect(c.close).toHaveBeenCalledTimes(1)
     expect(c.close).toHaveBeenCalledWith(true)
   })
 
@@ -123,7 +131,7 @@ describe('runDrain', () => {
     const outcome = await runDrain(s as never, { timeout: 500 })
 
     expect(outcome.forced).toBe(false)
-    expect(c.close).toHaveBeenCalledWith(false)
+    expect(c.close).toHaveBeenCalledWith(true)
   })
 
   it('deregisters and closes the driver on the clean path', async () => {
