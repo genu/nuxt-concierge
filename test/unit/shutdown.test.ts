@@ -17,8 +17,14 @@ const fakeConsumer = (opts: {
     pause: vi.fn(async () => { if (opts.pauseMs) await tick(opts.pauseMs) }),
     drain: vi.fn(async () => { await tick(opts.drainMs ?? 0) }),
     close: vi.fn(async (force: boolean) => {
-      if (force && opts.closeForceMs) await tick(opts.closeForceMs)
+      // Clears BEFORE the tick, not after: real drivers drop a job from
+      // local active tracking as soon as forcing kills it (e.g. the
+      // processor's `finally` block), independent of how long the close()
+      // promise itself then takes to fully settle (e.g. redis.quit()). A
+      // fake that only cleared after resolving could never reproduce "the
+      // close race timed out, but active() has already gone empty".
       if (force && opts.clearActiveOnForce) active = []
+      if (force && opts.closeForceMs) await tick(opts.closeForceMs)
     }),
     activeCount: () => active.length,
     active: () => active,
@@ -31,7 +37,7 @@ const fakeSupervisor = (consumers: ReturnType<typeof fakeConsumer>[]) => ({
   driver: { deregister: vi.fn(async () => {}), close: vi.fn(async () => {}) },
   setState: vi.fn(),
   getState: vi.fn(() => 'draining' as const),
-  stopHeartbeat: vi.fn(),
+  stopHeartbeat: vi.fn(async () => {}),
 })
 
 describe('runDrain', () => {
@@ -71,7 +77,7 @@ describe('runDrain', () => {
     // is no redundant second call, while the outcome still reports the
     // timeout and the still-active job honestly.
     const active: ActiveJob[] = [{ jobId: 'j-42', queue: 'q0', name: 'slow', startedAt: 1 }]
-    const c = fakeConsumer({ drainMs: 0, active, closeForceMs: 5000 })
+    const c = fakeConsumer({ drainMs: 0, active, closeForceMs: 5000, clearActiveOnForce: true })
     const s = fakeSupervisor([c])
 
     const outcome = await runDrain(s as never, { timeout: 60 })

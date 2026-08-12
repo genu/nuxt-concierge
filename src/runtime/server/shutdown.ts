@@ -114,8 +114,12 @@ export const runDrain = async (
   // Stop heartbeats before deregistering: a tick landing between
   // deregister() resolving and driver.close() would otherwise re-write the
   // worker record with a fresh TTL, leaving a phantom worker in the
-  // registry after the process is already gone.
-  supervisor.stopHeartbeat()
+  // registry after the process is already gone. stopHeartbeat() itself
+  // awaits any write already in flight from the last tick before clearing —
+  // clearing the interval alone only stops FUTURE ticks. Bounded by the
+  // shared deadline like every other step here, so a blackholed heartbeat
+  // write cannot stall the rest of the drain.
+  await withDeadline(supervisor.stopHeartbeat(), remaining())
 
   const consumers = [...supervisor.consumers.values()]
   let forced = false
@@ -158,6 +162,14 @@ export const runDrain = async (
       // shutdown hung anyway until Nitro's own timeout killed the process.
       // Do not "fix" this back to close(false) — see the timedOut branch
       // below for why a fallback force-close can no longer help either.
+      // Snapshot BEFORE the close race, for the exact same reason as
+      // forceCloseAndLog above: close(true) can clear local active tracking
+      // (a real driver drops a job from its map as soon as forcing kills it,
+      // independent of how long close() itself then takes to settle), so
+      // reading active() after the race below can come back empty even
+      // though the job was genuinely abandoned.
+      const preCloseActive = consumers.flatMap(c => c.active())
+
       const cleanClose = await withDeadline(
         Promise.allSettled(consumers.map(c => c.close(true))).then(() => undefined),
         remaining(),
@@ -172,7 +184,7 @@ export const runDrain = async (
         // abandoned job work, so there is nothing left to force a second
         // time. Just report the timeout honestly.
         forced = true
-        abandoned = consumers.flatMap(c => c.active())
+        abandoned = preCloseActive
         logger.warn(
           `close(true) exceeded ${timeout}ms; ${abandoned.length} job(s) still reported active. `
           + `These are eligible for redelivery: ${abandoned.map(j => j.jobId).join(', ') || 'none'}`,
