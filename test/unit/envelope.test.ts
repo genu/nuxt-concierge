@@ -82,6 +82,65 @@ describe('payload envelope', () => {
     expectNonRetryable(() => decodePayload(null as unknown))
   })
 
+  it('never embeds the raw payload/value content in the "not an envelope" error message', () => {
+    // The bullmq driver turns this message into an UnrecoverableError, which
+    // BullMQ persists as `failedReason` in Redis and also logs. Job payloads
+    // routinely carry user data, so the message must describe the SHAPE of
+    // the offending value only, never quote it back.
+    const secret = 'user-pii-do-not-log-me@example.com'
+    const err = (() => {
+      try {
+        decodePayload({ nope: true, secret, extra: 'x'.repeat(500) })
+        return null
+      }
+      catch (e) {
+        return e as UnsupportedEnvelopeError
+      }
+    })()
+
+    expect(err).toBeInstanceOf(UnsupportedEnvelopeError)
+    expect(err!.message).not.toContain(secret)
+    expect(err!.message).not.toContain('x'.repeat(500))
+    // Shape info IS expected: the received type and that it did not look
+    // like an envelope.
+    expect(err!.message).toMatch(/type=object/)
+    expect(err!.message).toMatch(/looksLikeEnvelope=false/)
+  })
+
+  it('reports v\'s type rather than its value when v is present but not a number', () => {
+    // An attacker-controlled, envelope-shaped object could otherwise smuggle
+    // arbitrary data through the `v` field itself.
+    const err = (() => {
+      try {
+        decodePayload({ v: 'super-secret-token', payload: 123 })
+        return null
+      }
+      catch (e) {
+        return e as UnsupportedEnvelopeError
+      }
+    })()
+
+    expect(err).toBeInstanceOf(UnsupportedEnvelopeError)
+    expect(err!.message).not.toContain('super-secret-token')
+    expect(err!.message).toMatch(/v=non-number \(string\)/)
+  })
+
+  it('reports payload length, never payload content, when payload is a string but v is missing', () => {
+    const err = (() => {
+      try {
+        decodePayload({ payload: 'sensitive-data-here' })
+        return null
+      }
+      catch (e) {
+        return e as UnsupportedEnvelopeError
+      }
+    })()
+
+    expect(err).toBeInstanceOf(UnsupportedEnvelopeError)
+    expect(err!.message).not.toContain('sensitive-data-here')
+    expect(err!.message).toMatch(/payloadLength=19/)
+  })
+
   it('throws non-retryable error when v is not a number', () => {
     expectNonRetryable(() => decodePayload({ v: '1', payload: '[]' }))
   })
