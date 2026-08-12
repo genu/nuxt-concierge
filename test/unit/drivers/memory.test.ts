@@ -1,0 +1,153 @@
+import { describe, it, expect } from 'vitest'
+import { createMemoryDriver } from '../../../src/runtime/server/drivers/memory'
+import type { WorkerRecord } from '../../../src/runtime/server/types'
+
+const tick = (ms = 20) => new Promise(r => setTimeout(r, ms))
+
+const record = (over: Partial<WorkerRecord> = {}): WorkerRecord => ({
+  id: 'w1',
+  hostname: 'h',
+  pid: 1,
+  role: 'worker',
+  queues: ['default'],
+  concurrency: { default: 1 },
+  version: 'test',
+  startedAt: Date.now(),
+  lastHeartbeat: Date.now(),
+  state: 'running',
+  active: [],
+  ...over,
+})
+
+describe('memory driver', () => {
+  it('reports its capabilities honestly', () => {
+    expect(createMemoryDriver().capabilities).toEqual({ persistent: false, crossProcess: false })
+  })
+
+  it('processes an enqueued job through a consumer', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    const seen: string[] = []
+    d.consume('default', { concurrency: 1 }, async ctx => { seen.push(ctx.name) })
+
+    await d.enqueue('default', { name: 'work', payload: { a: 1 } })
+    await tick(50)
+
+    expect(seen).toEqual(['work'])
+  })
+
+  it('respects concurrency', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    let inFlight = 0
+    let peak = 0
+    d.consume('default', { concurrency: 2 }, async () => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await tick(40)
+      inFlight--
+    })
+
+    for (let i = 0; i < 6; i++) await d.enqueue('default', { name: 'j', payload: {} })
+    await tick(300)
+
+    expect(peak).toBe(2)
+  })
+
+  it('reports depth for pending jobs', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    await d.enqueue('default', { name: 'j', payload: {} })
+    await d.enqueue('default', { name: 'j', payload: {} })
+
+    expect(await d.depth('default')).toBe(2)
+  })
+
+  it('pause stops fetching but resolves immediately while a job is active', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    let started = 0
+    const c = d.consume('default', { concurrency: 1 }, async () => {
+      started++
+      await tick(120)
+    })
+
+    await d.enqueue('default', { name: 'slow', payload: {} })
+    await d.enqueue('default', { name: 'never', payload: {} })
+    await tick(30)
+
+    const before = Date.now()
+    await c.pause()
+    // Must not have waited for the 120ms job.
+    expect(Date.now() - before).toBeLessThan(60)
+    expect(c.activeCount()).toBe(1)
+
+    await c.drain()
+    expect(c.activeCount()).toBe(0)
+    expect(started).toBe(1) // the second job was never fetched
+  })
+
+  it('drain resolves once in-flight reaches zero', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    const c = d.consume('default', { concurrency: 1 }, async () => { await tick(60) })
+    await d.enqueue('default', { name: 'j', payload: {} })
+    await tick(20)
+
+    await c.pause()
+    await c.drain()
+
+    expect(c.activeCount()).toBe(0)
+  })
+
+  it('exposes active jobs while running', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    const c = d.consume('default', { concurrency: 1 }, async () => { await tick(80) })
+    await d.enqueue('default', { name: 'visible', payload: {} })
+    await tick(30)
+
+    const active = c.active()
+    expect(active).toHaveLength(1)
+    expect(active[0]!.name).toBe('visible')
+    expect(active[0]!.queue).toBe('default')
+
+    await c.close(true)
+  })
+
+  it('stores and expires worker records by TTL', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+
+    await d.heartbeat(record({ id: 'alive' }), 10_000)
+    await d.heartbeat(record({ id: 'stale', lastHeartbeat: Date.now() - 60_000 }), 10_000)
+
+    const ids = (await d.workers()).map(w => w.id)
+    expect(ids).toContain('alive')
+    expect(ids).not.toContain('stale')
+  })
+
+  it('deregisters a worker record', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    await d.heartbeat(record({ id: 'w9' }), 10_000)
+    await d.deregister('w9')
+
+    expect(await d.workers()).toEqual([])
+  })
+
+  it('retries a failing job up to maxAttempts', async () => {
+    const d = createMemoryDriver()
+    await d.init()
+    let attempts = 0
+    d.consume('default', { concurrency: 1 }, async () => {
+      attempts++
+      throw new Error('always fails')
+    })
+
+    await d.enqueue('default', { name: 'bad', payload: {} })
+    await tick(300)
+
+    expect(attempts).toBe(3)
+  })
+})
