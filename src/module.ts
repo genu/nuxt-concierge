@@ -14,7 +14,7 @@ import {
   joinURL,
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
-import { scanFolder } from "./helplers";
+import { scanJobs, jobNameFromPath } from "./scan";
 import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
 import type { ModuleOptions } from "./options";
 import { moduleDefaults } from "./options";
@@ -47,29 +47,17 @@ export default defineNuxtModule<ModuleOptions>({
 
     addServerPlugin(resolve(nuxt.options.buildDir, "0.concierge-nuxt-plugin"));
 
-    const workers = await scanFolder("server/concierge/workers");
-    const queues = await scanFolder("server/concierge/queues");
-    const cronJobs = await scanFolder("server/concierge/cron");
+    const jobFiles = await scanJobs();
+    const jobNames = jobFiles.map(jobNameFromPath);
 
-    createTemplateNuxtPlugin(
-      queues,
-      workers,
-      cronJobs,
-      Object.keys(options.worker.queues),
-      name
-    );
+    createTemplateNuxtPlugin(jobFiles, jobNames);
     createTemplateType();
 
     if (nuxt.options.dev) {
       const plural = (word: string, count: number) =>
         `${count} ${word}${count === 1 ? "" : "s"}`;
 
-      logger.success(
-        `Created ${plural("queue", queues.length)} and ${plural(
-          "worker",
-          workers.length
-        )}`
-      );
+      logger.success(`Discovered ${plural("job", jobFiles.length)}`);
     }
 
     // Transpile BullBoard api because its not ESM

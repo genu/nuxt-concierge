@@ -9,98 +9,33 @@ const importFiles = (files: string[], prefix: string = "file") =>
   files
     .map(
       (file, index) =>
-        `import ${prefix}${index} from '${file.replace(".ts", "")}'`
+        `import ${prefix}${index} from '${file.replace(/\.ts$/, "")}'`
     )
     .join("\n");
 
-const methodFactory = (
-  input: unknown[],
-  methodName: string,
-  importedKey: string,
-  importedVarProps: string[]
-) => {
-  const r = input.map((_item, index) => {
-    const argsString: string[] = [];
-
-    for (const arg of importedVarProps) {
-      argsString.push(`${importedKey}${index}.${arg}`);
-    }
-    return `${methodName}(${argsString.join(",")});`;
-  });
-
-  return r.join("\n\t\t");
-};
-
+/**
+ * Task 8 replaces this body with the real supervisor wiring (registering
+ * handlers, starting workers, heartbeat, graceful shutdown). For now it only
+ * proves that every discovered job module resolves and imports cleanly.
+ *
+ * defineNitroPlugin is intentionally NOT imported: it is auto-injected via
+ * #imports, and an explicit import breaks resolution for some setups
+ * (notably Prisma).
+ */
 export const createTemplateNuxtPlugin = (
-  queues: string[],
-  workers: string[],
-  cron: string[],
-  adhocQueues: string[],
-  moduleName: string
+  jobFiles: string[],
+  jobNames: string[]
 ) => {
   const nitroPlugin = `
 import { consola } from "consola";
-import { defineNitroPlugin } from "#imports";
-import { $useConcierge } from "#concierge";
-${importFiles(queues, "queue")}
-${importFiles(workers, "worker")}
-${importFiles(cron, "cron")}
+${importFiles(jobFiles, "job")}
 
-const cronWorkerProcessor = async (job) => {
-  const { getCronJob } = $useConcierge();
-  const { name } = job.data;
+const jobNames = ${JSON.stringify(jobNames)};
 
-  const cronJob = getCronJob(name);
-
-  return await cronJob.processor(job);  
-}
-
-export default defineNitroPlugin(async (nitroApp) => {
-    const logger = consola.create({}).withTag("${moduleName}")
-    const { workers, createQueue, createWorker, addCronJob } = $useConcierge();
-    
-    // CRON Queue
-    const cronQueue = createQueue("CRON");
-
-    // Remove old cron jobs
-    await cronQueue.obliterate({force: true})
-
-    createWorker("CRON", cronWorkerProcessor)
-
-    // Add CRON Jobs      
-    ${methodFactory(cron, "addCronJob", "cron", [
-      "name",
-      "processor",
-      "schedule",
-    ])}            
-    
-    ${cron.map((_cron, i) => {
-      return `
-    cronQueue.add(cron${i}.name, { name: cron${i}.name }, {
-      repeat: cron${0}.schedule
-    })
-      `;
-    })}
-
-    // Queues
-    ${methodFactory(queues, "createQueue", "queue", ["name", "opts"])}
-    
-    // Simple Queues
-    ${adhocQueues.map((queue) => `createQueue("${queue}");`).join("\n\t\t")}
-
-    // Workers
-    ${methodFactory(workers, "createWorker", "worker", [
-      "name",
-      "processor",
-      "opts",
-    ])}       
-    
-    nitroApp.hooks.hookOnce("close", async () => {
-      logger.info("Stopping " + workers.length + " workers");
-
-      await Promise.all(workers.map((worker) => worker.close()));
-    })
-})
+export default defineNitroPlugin(async () => {
+  const logger = consola.create({}).withTag("concierge");
+  logger.info(\`Discovered \${jobNames.length} job(s): \${jobNames.join(", ")}\`);
+});
   `;
 
   addTemplate({
