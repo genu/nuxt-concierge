@@ -1,0 +1,63 @@
+# Register THIS filename (release.yml) when configuring npm trusted publishing
+# for the nuxt-concierge package on npmjs.com.
+#
+# Flow: release-please keeps a "chore(main): release ..." PR up to date from
+# Conventional Commits. Merging that PR tags the release, which triggers the
+# publish job below.
+name: release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm trusted publishing + provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      # Trusted publishing requires npm >= 11.5.1. We build with pnpm but
+      # publish with npm, because pnpm's OIDC support lags npm's.
+      - run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm dev:prepare
+
+      - run: pnpm lint
+
+      - run: pnpm test
+
+      - run: pnpm prepack
+
+      # --tag next is also set via publishConfig; explicit here so a misread
+      # of package.json can never promote a prerelease to `latest`.
+      - run: npm publish --provenance --access public --tag next
