@@ -4,6 +4,7 @@ import { consola } from 'consola'
 import { createDriver, resolveDriverName } from './drivers'
 import type { ConciergeDriver, Consumer } from './drivers'
 import type { JobDefinition, Role, SupervisorState, WorkerRecord } from './types'
+import { startNoWorkerWatch } from './guardrails'
 
 const logger = consola.create({}).withTag('nuxt-concierge')
 
@@ -116,6 +117,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
   let state: SupervisorState = 'starting'
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined
   let started = false
+  let stopWatch: (() => void) | undefined
 
   const supervisor: Supervisor = {
     id,
@@ -186,11 +188,15 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
           logger.warn('[nuxt-concierge] heartbeat failed', error)
         }
       }
+      else {
+        stopWatch = startNoWorkerWatch(supervisor)
+      }
 
       state = 'running'
     },
 
     stop: async () => {
+      stopWatch?.()
       supervisor.stopHeartbeat()
       await Promise.allSettled([...consumers.values()].map(c => c.close(true)))
       consumers.clear()
