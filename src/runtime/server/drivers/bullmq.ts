@@ -1,8 +1,9 @@
-import { Queue, Worker } from 'bullmq'
+import { Queue, UnrecoverableError, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
+import type { BullmqOptions } from '../../../options'
 import type { ConciergeDriver, Consumer } from './types'
 import type { CreateDriverOptions } from './index'
 
@@ -30,9 +31,32 @@ export const buildConnection = (c: CreateDriverOptions['connection'] = {}): Conn
  */
 type RedisConnectionOptions = ConstructorParameters<typeof Redis>[0]
 
+/** Mirrors moduleDefaults.bullmq in src/options.ts. */
+const BULLMQ_DEFAULTS: BullmqOptions = { maxStalledCount: 3, stalledInterval: 30_000 }
+
+/**
+ * Merges field-by-field rather than `opts ?? defaults`, so a caller who only
+ * overrides one field (e.g. `{ maxStalledCount: 5 }`) still gets the default
+ * for the other rather than `undefined`.
+ */
+export const resolveBullmqOptions = (opts?: Partial<BullmqOptions>): BullmqOptions => ({
+  maxStalledCount: opts?.maxStalledCount ?? BULLMQ_DEFAULTS.maxStalledCount,
+  stalledInterval: opts?.stalledInterval ?? BULLMQ_DEFAULTS.stalledInterval,
+})
+
+/**
+ * Mirrors the `retryable === false` branch in memory.ts. Kept as a small pure
+ * function so it is unit-testable without a live Redis and so the processor
+ * below stays a one-line decision.
+ */
+export const isPermanentFailure = (error: unknown): boolean =>
+  typeof error === 'object'
+  && error !== null
+  && (error as { retryable?: unknown }).retryable === false
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
-  const bull = opts.bullmq ?? { maxStalledCount: 3, stalledInterval: 30_000 }
+  const bull = resolveBullmqOptions(opts.bullmq)
 
   const queues = new Map<string, Queue>()
   const handlers = new Map<string, JobHandler>()
@@ -109,6 +133,18 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
               attempt: job.attemptsMade + 1,
               payload: decodePayload(job.data),
             })
+          }
+          catch (error) {
+            // Retrying an undecodable payload (or any error explicitly marked
+            // non-retryable) fails identically every time. UnrecoverableError
+            // tells BullMQ to fail the job now instead of consuming/scheduling
+            // a retry — the crash-loop this guards against only becomes
+            // reachable once per-job `attempts` are configured, but the guard
+            // is cheap to have in place before that happens.
+            if (isPermanentFailure(error)) {
+              throw new UnrecoverableError(error instanceof Error ? error.message : String(error))
+            }
+            throw error
           }
           finally {
             active.delete(jobId)

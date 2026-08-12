@@ -1,4 +1,4 @@
-import type { DriverName } from '../../../options'
+import type { BullmqOptions, DriverName } from '../../../options'
 import { createSyncDriver } from './sync'
 import type { ConciergeDriver } from './types'
 
@@ -36,7 +36,8 @@ export const resolveDriverName = (
 
 export interface CreateDriverOptions {
   connection?: { url?: string, host?: string, port?: number, password?: string }
-  bullmq?: { maxStalledCount: number, stalledInterval: number }
+  /** Partial so a caller can override just one field; missing fields fall back to defaults. */
+  bullmq?: Partial<BullmqOptions>
 }
 
 export const createDriver = async (
