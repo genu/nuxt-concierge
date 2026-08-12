@@ -68,6 +68,11 @@ toolchain bump (Renovate-driven, tracked separately).
 Resolved once at boot. Precedence: `CONCIERGE_ROLE` env → `concierge.role` config →
 default (`both` in dev, **`web` in prod**).
 
+The resolved value is validated against `web | worker | both` and throws a boot error
+otherwise. Without that check a `CONCIERGE_ROLE=workers` typo yields a process that starts no
+consumers *and* suppresses the no-worker warning, defeating the exact safeguard the
+production default exists to provide.
+
 The production default is deliberate: processing must be opted into. The resulting failure
 mode is "jobs pile up and nothing runs" — loud, and caught by the no-worker warning below.
 The alternative default would silently have every web instance also process jobs, which
@@ -103,14 +108,26 @@ The design splits accordingly:
    the health endpoint returns 503 while the listener is still up. No awaiting.
 2. **The `close` hook** performs the drain and owns the timeout budget.
 
-Drain sequence inside the `close` hook:
+Drain sequence inside the `close` hook. **The whole sequence is bounded by one deadline
+computed at entry, not just the drain step.** `pause()`, consumer close, driver close, and
+deregistration can each block or reject; an unbounded shutdown gets `SIGKILL`ed by the
+platform, which loses the clean path entirely — the opposite of the goal.
 
-1. `pause()` every consumer — stop fetching, keep processing
-2. `Promise.race([Promise.all(consumers.map(c => c.drain())), timeout(shutdownTimeout)])`
-3. On timeout: `close(true)` and **log the abandoned job IDs**, not merely a count — IDs are
-   what make them findable afterward
-4. Delete the heartbeat record (on both the clean and forced paths)
-5. Return, letting Nitro tear down everything else
+1. `pause()` every consumer. **Contract: `pause()` must not wait for active jobs.** It stops
+   fetching and resolves immediately, otherwise the budget below does not start counting
+   until in-flight work has already finished. BullMQ's default `worker.pause()` *does* wait,
+   so the adapter must call `worker.pause(true)`.
+2. `await Promise.race([Promise.all(consumers.map(c => c.drain())), timeout(remaining())])`
+3. If that timed out: snapshot `consumer.active()` **before** forcing — `close(true)` can
+   clear local active-job tracking — then `close(true)` and log the snapshotted job IDs. IDs
+   rather than a count are what make them findable afterwards.
+4. On the clean path, `close(false)` every consumer.
+5. In a `finally`: `deregister(id)`, then `driver.close()`, each bounded by whatever remains
+   of the budget. Both run on every path, including when an earlier step threw.
+6. Return, letting Nitro tear down everything else.
+
+Drawing steps 2–5 from a single deadline is what prevents a slow `pause()` from consuming the
+whole budget and leaving nothing for deregistration.
 
 A second signal forces immediate exit.
 
@@ -212,7 +229,7 @@ interface ConciergeDriver {
 }
 
 interface Consumer {
-  pause(): Promise<void>          // stop fetching, keep processing in-flight
+  pause(): Promise<void>          // stop fetching; resolves immediately, never awaits active jobs
   drain(): Promise<void>          // resolves when in-flight hits 0
   close(force: boolean): Promise<void>
   activeCount(): number
@@ -234,7 +251,12 @@ build-time validation needs.
 job.data = { v: 1, payload: devalue.stringify(userPayload) }
 ```
 
-The `v` field allows the envelope to change without a migration. A consequence to accept:
+The `v` field allows the envelope to change without a migration. Phase 1 has exactly one
+version, so a decoder table would be speculative — but the unknown-version path must be
+defined now: a payload with an unrecognised `v` fails the job with a distinct, non-retryable
+error, rather than crash-looping the worker or silently discarding the job.
+
+A further consequence to accept:
 BullBoard renders the payload as an opaque devalue array. Spec 4's dashboard parses it
 properly; this is one more reason the custom UI replaces BullBoard rather than wrapping it.
 
@@ -270,9 +292,13 @@ toy deploy, and throwing on a production boot is hostile.
 
 ### Health endpoint
 
-`GET /_concierge/health` → `200 { state, role, queues, activeCount, version }` while
-running, `503` once draining. Required by the drain design; also serves as the k8s readiness
-probe and the future `/metrics` host.
+`GET /_concierge/health` returns `200 { state, role, queues, activeCount, version }` only in
+`running`, and `503` in `starting`, `draining`, and `stopped`. Readiness must stay false until
+consumers are actually up rather than merely until the HTTP listener binds — otherwise a
+rolling deploy routes traffic to a process that cannot yet do work.
+
+Required by the drain design; also serves as the k8s readiness probe and the future `/metrics`
+host. Tested across all three roles.
 
 ## Configuration
 
@@ -297,7 +323,15 @@ export default defineNuxtConfig({
 })
 ```
 
-`driver: 'auto'` resolves to `bullmq` when a connection URL is present, otherwise `memory`.
+`driver: 'auto'` resolves to `bullmq` when a connection URL is present. Without one it
+resolves to `memory` **in development and test only**; in production it throws a targeted
+configuration error naming `REDIS_URL` and the explicit `driver` option.
+
+That restriction is load-bearing. Production defaults `role` to `web`, and guardrail rule 1
+throws for any non-`crossProcess` driver outside `role: 'both'` — so an unrestricted `auto`
+fallback to `memory` would fail production boot with a confusing capability error when the
+actual problem is a missing connection URL.
+
 Zero-config first run is the main adoption lever for the driver abstraction; it is not about
 production portability, since nobody migrates queue engines mid-project.
 
@@ -310,8 +344,10 @@ worker: CONCIERGE_ROLE=worker node .output/server/index.mjs
 
 ## Guarantees
 
-**At-least-once.** A job interrupted by force-close will run again, so handlers must be
-idempotent. This is correct semantics rather than a shortcoming, and it is what motivates
+**At-least-once.** A job interrupted by force-close becomes *eligible for redelivery* —
+BullMQ's stalled recovery re-queues it, but once `maxStalledCount` is exhausted it moves to
+`failed` instead. "Will run again" would overstate the guarantee. Handlers must be idempotent
+regardless. This is correct semantics rather than a shortcoming, and it is what motivates
 first-class dedup keys in spec 3.
 
 **The `memory` driver loses everything on process death.** Acceptable for a dev/test driver,
@@ -352,8 +388,11 @@ process dies. Assertions:
   container added to `ci.yml`.
 - **`stalledInterval` configurable** — otherwise the force-close and SIGKILL rows each take
   30 s+.
-- **Prefer explicit readiness signals over fixed sleeps.** These tests are timing-dependent
-  by nature; flaky lifecycle tests get skipped, and then the guarantee quietly rots.
+- **Prefer explicit readiness signals over fixed sleeps.** These tests are timing-dependent by
+  nature, and a flaky lifecycle test is the one kind that must never be quietly skipped —
+  skipping it removes the only regression signal for the shutdown guarantee. If a scenario does
+  become flaky, quarantine it with a named owner and a tracking issue that still surfaces a
+  visible failure. `skip` is not an acceptable resting state here.
 
 Current coverage is one trivial test (`test/basic.test.ts`), so this harness is effectively
 the first real suite in the repo and needs vitest configuration that does not yet exist.

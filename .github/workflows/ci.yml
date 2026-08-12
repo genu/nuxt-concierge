@@ -5,6 +5,11 @@ on:
     branches: [master, 1.x]
   pull_request:
 
+# These jobs execute pull-request code, including from forks. Nothing here
+# needs write access — pkg.pr.new comments via its GitHub App, not this token.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -18,6 +23,8 @@ jobs:
         node: [20, 24]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 
@@ -43,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 
@@ -57,4 +66,4 @@ jobs:
 
       - run: pnpm prepack
 
-      - run: pnpm dlx pkg-pr-new publish
+      - run: pnpm dlx pkg-pr-new@0.0.87 publish

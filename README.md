@@ -217,10 +217,31 @@ pnpm lint
 # Run Vitest
 pnpm test
 pnpm test:watch
-
-# Release new version
-pnpm release
 ```
+
+## Releasing
+
+Releases are automated — there is no local release command.
+
+[release-please](https://github.com/googleapis/release-please) reads
+[Conventional Commits](https://www.conventionalcommits.org/) on `master` and keeps a Release
+PR up to date with the next version and changelog. Merging that PR tags the release, which
+triggers a publish to npm from CI using trusted publishing (OIDC) with provenance.
+
+Prereleases publish under the `next` dist-tag, so `latest` continues to serve v1.
+
+> **Bootstrapping v2:** seeded at `1.0.60`, release-please derives `1.1.0-alpha.0` from the
+> first `feat:` commit — not `2.0.0-alpha.0`. The first v2 release needs an explicit
+> `Release-As: 2.0.0-alpha.0` commit footer. Check the version in the Release PR before
+> merging it; subsequent increments are automatic.
+
+Every commit and pull request also publishes an installable preview build via
+[pkg.pr.new](https://pkg.pr.new):
+
+```bash
+pnpm add https://pkg.pr.new/nuxt-concierge@<pr-number-or-sha>
+```
+
 
 <!-- Badges -->
 
