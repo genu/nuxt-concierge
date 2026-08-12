@@ -75,6 +75,7 @@
     "@nuxt/test-utils": "4.1.0",
     "@types/node": "24.10.1",
     "eslint": "9.39.5",
+    "eslint-plugin-vitest": "0.5.4",
     "nuxt": "4.5.2",
     "typescript": "5.9.3",
     "vitest": "4.1.10",
