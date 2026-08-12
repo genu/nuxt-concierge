@@ -23,6 +23,10 @@ export default defineEventHandler((event) => {
   const status = healthStatus(supervisor?.getState())
   setResponseStatus(event, status)
 
-  if (!supervisor) return { state: 'stopped', error: 'supervisor not started' }
+  // Deliberately not shaped like healthPayload()'s `state` field: `stopped`
+  // would be a lie here (the supervisor may never have existed at all, e.g.
+  // mid-boot, not `stopped`), and SupervisorState gets no new member for a
+  // case that only exists when there IS no supervisor to hold one.
+  if (!supervisor) return { ready: false, error: 'the supervisor has not started yet' }
   return healthPayload(supervisor)
 })
