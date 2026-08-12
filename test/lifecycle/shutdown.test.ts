@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 import { execSync } from 'node:child_process'
 import {
-  spawnApp, waitForReady, waitForActiveCount, waitForLogCount, waitForNonHealthyResponse,
+  spawnApp, waitForReady, waitForActiveCount, waitForLogCount,
   enqueue, readLog, waitForExit, cleanup, summarise, flushRedis, namespaceRedisUrl,
   killAllSpawned, type AppHandle,
 } from './harness'
@@ -102,60 +102,38 @@ describe.each(DRIVERS)('lifecycle: %s driver', (driver) => {
     console.log(`[${driver}] duplicates: ${duplicates}/${completed.size}`)
   }, 90_000)
 
-  it('reports 503 on health once draining', async () => {
-    app = await spawnApp({ driver, role: 'both' })
-    await waitForReady(app)
-    await enqueue(app, 5, 2000)
-
-    app.proc.kill('SIGTERM')
-
-    // A response that KEEPS reporting 200 is the real regression this
-    // guards against — the point of healthStatus('draining') === 503
-    // (unit-tested directly and in isolation in test/unit/health.test.ts)
-    // is that a rolling deploy must stop routing traffic once a process
-    // starts draining. waitForNonHealthyResponse ignores 200s rather than
-    // returning the first response: a health check fired immediately after
-    // kill() can race actual signal delivery to the child and legitimately
-    // see the OLD, still-200 state, which is not the regression this test
-    // cares about.
-    //
-    // A literal, externally-observed 503 is NOT reliably achievable here,
-    // and this is upstream Nitro behaviour, not this module's: Nitro's own
-    // graceful-shutdown wrapper (http-graceful-shutdown, wired in by
-    // nitropack's node-server preset) destroys every connection — brand
-    // new AND already-established idle-keepalive sockets alike — the
-    // instant it receives the same signal, before this route (or our own
-    // supervisor state) is ever consulted. Verified empirically: 100/100
-    // requests across a full 2s drain window failed with a connection
-    // reset, using both fresh per-request connections (curl) and a
-    // persistent keep-alive fetch pool from the same process issuing these
-    // requests. So: if a non-200 response DOES arrive, it must be 503 —
-    // that assertion is what would catch a "reports something other than
-    // 503 while draining" regression. If the process becomes unreachable
-    // and then exits without ever producing one (the deterministic outcome
-    // observed above), that is the expected shape of this deployment
-    // configuration, asserted on explicitly (the error message is required
-    // to match this exact, known cause) rather than silently treated as
-    // "nothing to check".
-    let status: number | undefined
-    let unreachable: unknown
-
-    try {
-      status = await waitForNonHealthyResponse(app, 3000)
-    }
-    catch (err) {
-      unreachable = err
-    }
-
-    if (status !== undefined) {
-      expect(status).toBe(503)
-    }
-    else {
-      expect(String(unreachable)).toMatch(/app exited|still reporting 200/)
-    }
-
-    await waitForExit(app)
-  }, 90_000)
+  // There is deliberately no lifecycle scenario asserting "health returns
+  // 503 while draining" over a real HTTP connection. On the node-server
+  // preset used here, Nitro's own graceful-shutdown wrapper
+  // (http-graceful-shutdown) destroys every connection — brand new AND
+  // already-established idle-keepalive sockets alike — within milliseconds
+  // of receiving the shutdown signal, independent of this module's own
+  // supervisor state, before this route is ever consulted for that
+  // request. Verified empirically, twice: 100 sequential curl requests
+  // (fresh connection each) across a full 2s drain window all failed with
+  // a connection reset, and a persistent Node fetch() keep-alive pool
+  // polling every 5ms across the same window saw "fetch failed" on every
+  // attempt — zero responses of any kind, in either experiment. Confirmed
+  // further by deliberately disabling this module's own
+  // `supervisor?.setState('draining')` call (src/runtime/server/shutdown.ts)
+  // and rerunning an earlier version of this scenario: it still passed,
+  // because Nitro's connection teardown does not depend on this module's
+  // state at all.
+  //
+  // So: on this preset, an operator does not observe a 503 during drain —
+  // they observe connection refusal, which is Nitro's behaviour, not this
+  // module's to test. Every attempt at an end-to-end assertion here either
+  // tautologises (accepts its own "unreachable" error as proof, which any
+  // unrelated failure would also satisfy) or ends up testing Nitro instead
+  // of this module. Two such attempts shipped and were both reverted for
+  // exactly that reason — see the fix-round history in
+  // .superpowers/sdd/2026-08-12-concierge-v2-phase1-lifecycle/task-12-report.md
+  // before reintroducing coverage here.
+  //
+  // The guarantee IS covered, just not at this layer: `healthStatus('draining')
+  // === 503` is asserted directly, in-process, with no Nitro connection
+  // layer involved, in test/unit/health.test.ts. That test correctly fails
+  // if the state-flip logic in shutdown.ts breaks. Leave it there.
 
   it('exits immediately on a second signal', async () => {
     app = await spawnApp({ driver, role: 'both', shutdownTimeout: 20_000 })

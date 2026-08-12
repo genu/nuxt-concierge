@@ -177,34 +177,6 @@ export const waitForActiveCount = async (
 }
 
 /**
- * Ignores 200s and keeps polling instead of returning the first response
- * seen. A health check fired immediately after `kill('SIGTERM')` can race
- * actual signal delivery to the child process and legitimately observe the
- * OLD ("still running") state; treating that first 200 as final would make
- * a caller's "must not still report healthy" assertion pass or fail on pure
- * timing luck. Resolves with the first non-200 status seen. Throws if the
- * process exits, or the timeout elapses, without ever producing one — both
- * are real outcomes for the caller to see, not silently swallowed.
- */
-export const waitForNonHealthyResponse = async (app: AppHandle, timeoutMs = 5_000): Promise<number> => {
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() < deadline) {
-    if (app.proc.exitCode !== null) {
-      throw new Error(`app exited (code ${app.proc.exitCode}) before reporting anything other than 200`)
-    }
-    try {
-      const res = await fetch(`http://127.0.0.1:${app.port}/_concierge/health`)
-      if (res.status !== 200) return res.status
-    }
-    catch { /* connection reset/refused: retry, do not treat as a final answer */ }
-    await new Promise(r => setTimeout(r, 25))
-  }
-
-  throw new Error(`still reporting 200 (or unreachable without exiting) after ${timeoutMs}ms`)
-}
-
-/**
  * Points lifecycle tests at a dedicated Redis logical database rather than
  * whatever database the supplied REDIS_URL defaults to (0). `flushRedis`
  * below runs `FLUSHDB`, which would otherwise wipe an operator's real data
