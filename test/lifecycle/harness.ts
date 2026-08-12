@@ -177,6 +177,14 @@ export const waitForActiveCount = async (
 }
 
 /**
+ * The dedicated logical database every lifecycle test agrees on. Shared as a
+ * named constant (rather than each of `namespaceRedisUrl`'s default
+ * parameter and `flushRedis`'s own safety check separately hardcoding `15`)
+ * so the two can never drift apart.
+ */
+const LIFECYCLE_REDIS_DB = 15
+
+/**
  * Points lifecycle tests at a dedicated Redis logical database rather than
  * whatever database the supplied REDIS_URL defaults to (0). `flushRedis`
  * below runs `FLUSHDB`, which would otherwise wipe an operator's real data
@@ -185,8 +193,35 @@ export const waitForActiveCount = async (
  * consumer (the build, `flushRedis`, and every spawned app, since the
  * connection URL is threaded through unchanged) agrees on the same
  * isolated database.
+ *
+ * Uses `URL` rather than a regex substitution: a regex matching only a
+ * trailing `/\d+` silently APPENDS instead of replacing for any other URL
+ * shape (e.g. `redis://host:6379?family=6` -> `...?family=6/15`, which is
+ * not a database selector at all; `redis://host:6379/` ->
+ * `redis://host:6379//15`), leaving the connection on database 0 with no
+ * indication anything went wrong. `flushRedis` would then FLUSHDB against
+ * database 0 — exactly the outcome this function exists to prevent. Setting
+ * `pathname` explicitly on a parsed URL cannot silently append, and throws
+ * loudly on input that cannot be parsed as a URL at all rather than
+ * proceeding with something unnamespaced.
  */
-export const namespaceRedisUrl = (url: string, db = 15): string => `${url.replace(/\/\d+$/, '')}/${db}`
+export const namespaceRedisUrl = (url: string, db: number = LIFECYCLE_REDIS_DB): string => {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  }
+  catch (error) {
+    throw new Error(
+      `[lifecycle harness] cannot namespace REDIS_URL "${url}" to a dedicated database: `
+      + `${error instanceof Error ? error.message : String(error)}. Refusing to proceed, `
+      + `since flushRedis() would otherwise FLUSHDB against whatever database this URL `
+      + `actually resolves to.`,
+      { cause: error },
+    )
+  }
+  parsed.pathname = `/${db}`
+  return parsed.toString()
+}
 
 /**
  * Lifecycle scenarios deliberately crash processes mid-job (SIGKILL, forced
@@ -199,7 +234,13 @@ export const namespaceRedisUrl = (url: string, db = 15): string => `${url.replac
  * runs (the common contributor path, no Redis required) pay nothing.
  *
  * Only ever flushes the database selected by REDIS_URL's own path segment
- * (see `namespaceRedisUrl`), never the operator's default database.
+ * (see `namespaceRedisUrl`), never the operator's default database. The
+ * check below is independent of `namespaceRedisUrl` having actually run
+ * correctly — it reads the db ioredis itself resolved from the connection
+ * string, immediately before the one genuinely destructive call in this
+ * whole file, so a regression in the namespacing logic (or REDIS_URL being
+ * set directly, bypassing it) still cannot result in FLUSHDB running
+ * against database 0.
  */
 export const flushRedis = async (): Promise<void> => {
   const url = process.env.REDIS_URL
@@ -208,6 +249,15 @@ export const flushRedis = async (): Promise<void> => {
   const client = new IORedis(url, { maxRetriesPerRequest: 0, lazyConnect: true })
   try {
     await client.connect()
+
+    if (client.options.db !== LIFECYCLE_REDIS_DB) {
+      throw new Error(
+        `[lifecycle harness] refusing to FLUSHDB: connected to database ${client.options.db}, `
+        + `expected the dedicated lifecycle-test database ${LIFECYCLE_REDIS_DB}. This must never `
+        + `run against an operator's real database.`,
+      )
+    }
+
     await client.flushdb()
   }
   finally {
@@ -234,11 +284,30 @@ export const enqueue = async (app: AppHandle, count: number, durationMs: number,
 
 export interface LogLine { jobId: number, attempt: number, pid: number, id: string }
 
-export const readLog = (app: AppHandle): LogLine[] =>
-  readFileSync(app.logPath, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map(l => JSON.parse(l) as LogLine)
+/**
+ * Tolerates exactly one unparseable line: the LAST one, and only the last
+ * one. SIGKILL (used deliberately by several scenarios to simulate a crash)
+ * can interrupt `appendFileSync` mid-write, leaving a torn, partial JSON
+ * line as the file's final line — an expected artifact of that specific
+ * scenario, not a bug. A malformed line ANYWHERE ELSE is a real bug in the
+ * job or the harness and must still throw loudly rather than being silently
+ * dropped.
+ */
+export const readLog = (app: AppHandle): LogLine[] => {
+  const lines = readFileSync(app.logPath, 'utf8').split('\n').filter(Boolean)
+
+  return lines
+    .map((line, i) => {
+      try {
+        return JSON.parse(line) as LogLine
+      }
+      catch (error) {
+        if (i === lines.length - 1) return undefined
+        throw error
+      }
+    })
+    .filter((line): line is LogLine => line !== undefined)
+}
 
 /**
  * Polls the append-only log rather than sleeping a fixed duration, for a
