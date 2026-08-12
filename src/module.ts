@@ -45,6 +45,16 @@ export default defineNuxtModule<ModuleOptions>({
       handler: resolve("./runtime/server/routes/ui-handler"),
     });
 
+    addServerHandler({
+      route: "/_concierge/health",
+      handler: resolve("./runtime/server/routes/health"),
+    });
+
+    addServerHandler({
+      middleware: true,
+      handler: resolve("./runtime/server/middleware/role-gate"),
+    });
+
     addServerPlugin(resolve(nuxt.options.buildDir, "0.concierge-nuxt-plugin"));
 
     const jobs = await scanJobs();
