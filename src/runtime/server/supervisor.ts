@@ -40,6 +40,14 @@ export interface Supervisor {
   getState: () => SupervisorState
   setState: (state: SupervisorState) => void
   startConsumers: () => Promise<void>
+  /**
+   * Stops the heartbeat interval without touching consumers or the driver.
+   * Idempotent. Shutdown (Task 9) calls this before deregistering: a tick
+   * landing between `deregister()` resolving and `driver.close()` would
+   * otherwise re-write the worker record with a fresh TTL, leaving a
+   * phantom worker in the registry after the process is already gone.
+   */
+  stopHeartbeat: () => void
   record: () => WorkerRecord
   stop: () => Promise<void>
 }
@@ -119,6 +127,13 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     getState: () => state,
     setState: (next) => { state = next },
 
+    stopHeartbeat: () => {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer)
+        heartbeatTimer = undefined
+      }
+    },
+
     record: () => ({
       id,
       hostname: hostname(),
@@ -176,7 +191,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     },
 
     stop: async () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
+      supervisor.stopHeartbeat()
       await Promise.allSettled([...consumers.values()].map(c => c.close(true)))
       consumers.clear()
       await driver.deregister(id).catch(() => {})
