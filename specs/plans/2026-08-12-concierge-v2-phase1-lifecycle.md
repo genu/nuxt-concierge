@@ -2155,12 +2155,54 @@ Replace the `#concierge-handlers` type template body with just `defineJob`, and 
 git rm src/runtime/server/utils/concierge.ts
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Add stubs for the modules Tasks 9 and 11 will implement**
 
-Tasks 9 and 11 create `shutdown.ts` and `guardrails.ts`, so `dev:prepare` will not pass until Task 11. Commit the unit-tested supervisor now and note the gap.
+The generated plugin imports `#concierge/shutdown` and `#concierge/guardrails`, which do not exist yet. Create them as stubs so the build never breaks — Tasks 9 and 11 replace their contents entirely.
+
+Create `src/runtime/server/shutdown.ts`:
+
+```ts
+// Stub — Task 9 replaces this file with the bounded drain sequence.
+import type { Supervisor } from './supervisor'
+
+export interface NitroAppLike {
+  hooks: { hookOnce: (name: string, fn: () => Promise<void> | void) => void }
+}
+
+export const installShutdown = (_nitroApp: NitroAppLike, _supervisor: Supervisor): void => {}
+```
+
+Create `src/runtime/server/guardrails.ts`:
+
+```ts
+// Stub — Task 11 replaces this file with the real boot checks.
+export interface GuardrailInput {
+  role: string
+  capabilities: { persistent: boolean, crossProcess: boolean }
+  driverName: string
+  queueCount: number
+  isProduction: boolean
+  shutdownTimeout: number
+  nitroShutdownTimeout: number
+  nitroShutdownDisabled: boolean
+  preset?: string
+}
+
+export const checkGuardrails = (_input: GuardrailInput): void => {}
+```
+
+- [ ] **Step 8: Verify the build is green**
 
 ```bash
-git add src/runtime/server/supervisor.ts test/unit/supervisor.test.ts src/templates.ts
+pnpm dev:prepare && pnpm lint && pnpm test && pnpm prepack
+```
+
+Expected: all pass. If `dev:prepare` fails on a missing `#concierge/*` alias, re-check the alias block from Step 5.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add src/runtime/server/supervisor.ts src/runtime/server/shutdown.ts src/runtime/server/guardrails.ts test/unit/supervisor.test.ts src/templates.ts
 git commit -m "feat: add the worker supervisor and heartbeat loop
 
 One object owns worker lifecycle, the state machine and heartbeats. Active
@@ -2174,7 +2216,8 @@ The generated plugin keeps its 0. prefix, now with a comment explaining that
 close-hook ordering depends on it, and no longer imports defineNitroPlugin
 from #imports.
 
-Note: dev:prepare stays red until Task 11 adds shutdown.ts and guardrails.ts."
+shutdown.ts and guardrails.ts land as stubs so the build stays green; Tasks 9
+and 11 replace them."
 ```
 
 ---
@@ -2184,7 +2227,7 @@ Note: dev:prepare stays red until Task 11 adds shutdown.ts and guardrails.ts."
 The core of phase 1.
 
 **Files:**
-- Create: `src/runtime/server/shutdown.ts`
+- Replace: `src/runtime/server/shutdown.ts` (Task 8 left a stub; overwrite it entirely)
 - Create: `test/unit/shutdown.test.ts`
 
 **Interfaces:**
@@ -2659,7 +2702,7 @@ long-lived connections is not starved of its shutdown budget."
 ### Task 11: Boot guardrails and the no-worker warning
 
 **Files:**
-- Create: `src/runtime/server/guardrails.ts`
+- Replace: `src/runtime/server/guardrails.ts` (Task 8 left a stub; overwrite it entirely)
 - Create: `test/unit/guardrails.test.ts`
 - Modify: `src/runtime/server/supervisor.ts`
 
@@ -2928,15 +2971,13 @@ Then call `stopWatch?.()` at the top of `stop()`.
 Run: `pnpm vitest run test/unit`
 Expected: PASS — every unit test from Tasks 2–11.
 
-- [ ] **Step 6: Verify the build is green again**
-
-`shutdown.ts` and `guardrails.ts` now exist, so the generated plugin resolves.
+- [ ] **Step 6: Verify the build**
 
 ```bash
 pnpm dev:prepare && pnpm lint && pnpm prepack
 ```
 
-Expected: all pass. If `dev:prepare` fails on a missing `#concierge/*` alias, re-check the alias block from Task 8 Step 5.
+Expected: all pass. The real `guardrails.ts` now replaces Task 8's stub, so `checkGuardrails` actually enforces its rules for the first time — if `dev:prepare` starts failing here, read the thrown message: it is probably guardrail rule 1 firing correctly against the playground's configuration.
 
 - [ ] **Step 7: Commit**
 
@@ -3200,9 +3241,12 @@ describe.each(DRIVERS)('lifecycle: %s driver', (driver) => {
 
     const { completed, duplicates } = summarise(readLog(app))
     expect(completed.size).toBe(20)
-    // Duplicates are REPORTED, never asserted to be zero — at-least-once is
-    // the documented guarantee and asserting zero would flake.
-    console.log(`[${driver}] duplicates: ${duplicates}`)
+    // Assert a BOUND, not zero. At-least-once means a clean drain may legally
+    // re-run a job, so asserting zero duplicates would flake — but asserting
+    // nothing would let a driver that re-runs every job pass. A clean SIGTERM
+    // drain should not duplicate the majority of the batch.
+    expect(duplicates).toBeLessThan(completed.size)
+    console.log(`[${driver}] duplicates: ${duplicates}/${completed.size}`)
   }, 90_000)
 
   it('reports 503 on health once draining', async () => {
