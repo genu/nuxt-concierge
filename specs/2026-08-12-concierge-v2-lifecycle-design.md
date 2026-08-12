@@ -229,10 +229,28 @@ platform, which loses the clean path entirely — the opposite of the goal.
 3. If that timed out: snapshot `consumer.active()` **before** forcing — `close(true)` can
    clear local active-job tracking — then `close(true)` and log the snapshotted job IDs. IDs
    rather than a count are what make them findable afterwards.
-4. On the clean path, `close(false)` every consumer.
+4. On the clean path, `close(true)` every consumer — see the correction below.
 5. In a `finally`: `deregister(id)`, then `driver.close()`, each bounded by whatever remains
    of the budget. Both run on every path, including when an earlier step threw.
 6. Return, letting Nitro tear down everything else.
+
+> **Correction to step 4 (verified during implementation).** This document originally
+> specified `close(false)` on the clean path, with a fallback to `close(true)` if that
+> graceful close itself blew the budget. That fallback cannot work: BullMQ's `Worker.close()`
+> de-dupes concurrent calls — `if (this.closing) return this.closing` — so once `close(false)`
+> is in flight, a later `close(true)` returns the original promise and **silently discards the
+> `force` argument**. Shutdown then hangs on the graceful close until Nitro's timeout kills the
+> process.
+>
+> The clean path therefore calls `close(true)`. That is safe because step 2 has already
+> established that in-flight work reached zero, so forcing cannot abandon anything, and it
+> makes the de-dupe interaction unreachable by construction rather than merely handled. One
+> narrow race remains: a job can enter the driver's active map between `drain()` resolving and
+> the close being issued, and forcing abandons it — which is honest under at-least-once, and
+> strictly better than hanging.
+>
+> `src/runtime/server/shutdown.ts` carries a comment warning against reverting this. Do not
+> "restore" `close(false)` on the basis of this document's original wording.
 
 Drawing steps 2–5 from a single deadline is what prevents a slow `pause()` from consuming the
 whole budget and leaving nothing for deregistration.
