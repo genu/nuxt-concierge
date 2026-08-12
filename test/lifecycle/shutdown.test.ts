@@ -264,3 +264,80 @@ describe.runIf(process.env.REDIS_URL)('bullmq recovery', () => {
     }
   }, 150_000)
 })
+
+describe.runIf(process.env.REDIS_URL)('two-process production shape (web + worker)', () => {
+  it('draining the worker does not touch web, and completions come from the worker pid', async () => {
+    // Every drain scenario above runs role: 'both' in a single process. That
+    // only IMPLIES the real deployment target — a separate web process and a
+    // separate worker process sharing one bullmq/Redis backend — drains
+    // correctly; it never demonstrates it. This test spawns that exact
+    // shape: two independent OS processes, different ports, only one of
+    // which (worker) is ever sent a signal.
+    //
+    // The memory driver cannot stand in here: it keeps state in-process, so
+    // guardrailDiagnostics (src/runtime/server/guardrails.ts) refuses any
+    // role other than 'both' when it is selected — this scenario is
+    // bullmq-only by necessity, not by choice.
+    let web: AppHandle | undefined
+    let worker: AppHandle | undefined
+
+    // Deliberately outside the 3100-3499 range every other scenario in this
+    // file draws its random port from, so a slow-to-release process left
+    // over from an earlier scenario cannot collide with either of these.
+    const WEB_PORT = 3900
+    const WORKER_PORT = 3901
+
+    try {
+      web = await spawnApp({ role: 'web', driver: 'bullmq', port: WEB_PORT })
+      worker = await spawnApp({ role: 'worker', driver: 'bullmq', port: WORKER_PORT, shutdownTimeout: 20_000 })
+      await waitForReady(web)
+      await waitForReady(worker)
+
+      // Enqueue via the WEB process's HTTP API. This is the whole point of
+      // the split: the producer needs no consumers of its own. Enqueuing
+      // against `worker` instead would 503 — under role: 'worker', the role
+      // gate (src/runtime/server/middleware/role-gate.ts) serves nothing but
+      // /_concierge/health, so web is the only process in this shape that
+      // can accept the request at all.
+      const { ids } = await enqueue(web, 5, 300)
+      expect(ids.length).toBe(5)
+
+      // Poll the WORKER's health endpoint, not web's: role: 'web' starts no
+      // consumers (src/runtime/server/supervisor.ts), so web's activeCount
+      // is permanently 0 no matter how long anything waits on it. This also
+      // proves the jobs enqueued via web actually crossed into the worker
+      // process rather than sitting unclaimed.
+      await waitForActiveCount(worker, 5)
+
+      // SIGTERM the worker only. Web is never signalled and keeps running
+      // throughout.
+      worker.proc.kill('SIGTERM')
+      await waitForExit(worker)
+
+      const { completed, duplicates, pids } = summarise(readLog(worker))
+      expect(completed.size).toBe(5)
+      // Same reasoning as the single-process drain scenario above: at least
+      // once means a clean drain may legally re-run a job, so zero would
+      // flake, but the bound still has to bite.
+      expect(duplicates).toBeLessThanOrEqual(1)
+      // Every completion came from the WORKER's pid specifically — not web's,
+      // and not some other stray process — proving the work genuinely ran in
+      // the dedicated worker process this scenario spawned.
+      expect(pids.size).toBe(1)
+      expect(pids.has(worker.proc.pid!)).toBe(true)
+
+      // Killing a worker must not affect web: still reachable, still
+      // reporting itself as running, after the worker it shares Redis with
+      // has fully exited.
+      const res = await fetch(`http://127.0.0.1:${web.port}/_concierge/health`)
+      expect(res.status).toBe(200)
+      const body = await res.json() as { state?: string, role?: string }
+      expect(body.state).toBe('running')
+      expect(body.role).toBe('web')
+    }
+    finally {
+      if (worker) cleanup(worker)
+      if (web) cleanup(web)
+    }
+  }, 90_000)
+})
