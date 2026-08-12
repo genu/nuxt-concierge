@@ -12,7 +12,13 @@ export interface WorkerRecord {
   id: string
   hostname: string
   pid: number
-  role: 'worker' | 'both'
+  /**
+   * The supervisor's actual configured role, including `web`. A `web`
+   * process's record used to be reported as `both`; Task 10's health
+   * endpoint reads this field directly, so misreporting it would be a lie
+   * a caller could act on.
+   */
+  role: Role
   queues: string[]
   concurrency: Record<string, number>
   version: string

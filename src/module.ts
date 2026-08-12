@@ -89,16 +89,41 @@ export default defineNuxtModule<ModuleOptions>({
       packageVersion = undefined;
     }
 
-    // Resolved at build time, not read from the nitro preset at runtime: the
-    // guardrail check only needs it to warn about serverless presets, and
-    // nuxt.options.nitro.preset is the reliable source for that.
-    const preset = nuxt.options.nitro?.preset;
+    // One signal for "dev", resolved once at build time and reused
+    // everywhere at runtime, rather than two: resolveRole previously read
+    // import.meta.dev while the driver/guardrail path read
+    // process.env.NODE_ENV. Both are statically inlined by nitro's
+    // production bundler, which freezes whichever value was true at BUILD
+    // time into the artifact — reading them at runtime is not just
+    // redundant, it is a lie for anyone who sets NODE_ENV on the deployed
+    // process expecting it to matter. Baking the resolved booleans into
+    // runtimeConfig instead keeps them overridable via the standard
+    // NUXT_CONCIERGE_IS_DEV / NUXT_CONCIERGE_IS_PRODUCTION env vars.
+    const isDev = nuxt.options.dev;
 
     nuxt.options.runtimeConfig.concierge = defu(
-      { role, version: packageVersion ?? "unknown", preset },
+      { role, version: packageVersion ?? "unknown", isDev, isProduction: !isDev },
       nuxt.options.runtimeConfig.concierge,
       options
     );
+
+    // The preset a user configures explicitly (nuxt.options.nitro.preset) is
+    // not the same thing as the preset nitro actually resolves: serverless
+    // targets (Vercel/Netlify/Cloudflare) are usually auto-detected, so the
+    // user-supplied value is undefined in exactly the case Task 11's
+    // serverless guardrail must catch. nitro.options.preset is only known
+    // once nitro itself has finished resolving it, which is after this
+    // setup() function returns — hence the nitro:init hook rather than
+    // reading it here.
+    nuxt.hook("nitro:init", (nitro) => {
+      const runtimeConfig = nitro.options.runtimeConfig as
+        | { concierge?: Record<string, unknown> }
+        | undefined;
+
+      if (runtimeConfig?.concierge) {
+        runtimeConfig.concierge.preset = nitro.options.preset;
+      }
+    });
 
     logger.info(`Role: ${role}`);
 

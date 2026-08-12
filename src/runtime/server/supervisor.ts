@@ -20,6 +20,15 @@ export interface SupervisorConfig {
   }
   jobs: JobDefinition[]
   version: string
+  /**
+   * Resolved at build time by the host module, not read from process.env at
+   * runtime here: Nitro's production bundling statically inlines
+   * `process.env.NODE_ENV`, which freezes an `auto` driver's guardrail
+   * decision into the built artifact with no runtime escape hatch. Reading
+   * it off runtimeConfig instead keeps it overridable via the standard
+   * NUXT_CONCIERGE_IS_PRODUCTION env var.
+   */
+  isProduction: boolean
 }
 
 export interface Supervisor {
@@ -38,7 +47,18 @@ export interface Supervisor {
 let current: Supervisor | undefined
 
 export const getSupervisor = (): Supervisor | undefined => current
-export const resetSupervisor = () => { current = undefined }
+
+/**
+ * Actually tears down the current supervisor (clears the heartbeat interval,
+ * closes consumers and the driver) rather than just dropping the reference.
+ * Every supervisor test relies on this: if an assertion fails before its
+ * trailing `await s.stop()`, an un-torn-down heartbeat interval and the
+ * memory driver's poll loop would otherwise leak into the rest of the suite.
+ */
+export const resetSupervisor = async (): Promise<void> => {
+  if (current) await current.stop()
+  current = undefined
+}
 
 export const getDriver = () => {
   if (!current) throw new Error('[nuxt-concierge] the supervisor has not started yet')
@@ -59,10 +79,17 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     }
   }
 
+  // A second createSupervisor() call (successive tests, or a dev-mode nitro
+  // reload) must not leak the previous supervisor's timer, consumers and
+  // driver. Stopping the live one first rather than refusing keeps both
+  // paths simple; there is no scenario where two supervisors should ever be
+  // live at once.
+  if (current) await current.stop()
+
   const driverName = resolveDriverName({
     configured: config.driver,
     hasConnection: Boolean(config.connection.url ?? config.connection.host),
-    isProduction: process.env.NODE_ENV === 'production',
+    isProduction: config.isProduction,
   })
 
   const driver = await createDriver(driverName, {
@@ -80,6 +107,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
 
   let state: SupervisorState = 'starting'
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined
+  let started = false
 
   const supervisor: Supervisor = {
     id,
@@ -95,7 +123,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
       id,
       hostname: hostname(),
       pid: process.pid,
-      role: config.role === 'web' ? 'both' : config.role,
+      role: config.role,
       queues: queueNames,
       concurrency: config.worker.queues,
       version: config.version,
@@ -108,18 +136,40 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     }),
 
     startConsumers: async () => {
+      // A second call must not re-create consumers or leak a second
+      // heartbeat interval on top of the first.
+      if (started) return
+      started = true
+
       if (config.role !== 'web') {
         for (const [queue, concurrency] of Object.entries(config.worker.queues)) {
           consumers.set(queue, driver.consume(queue, { concurrency }))
         }
 
         heartbeatTimer = setInterval(() => {
-          void driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl)
-            .catch(error => logger.debug('heartbeat failed', error))
+          try {
+            void driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl)
+              .catch((error: unknown) => logger.warn('[nuxt-concierge] heartbeat failed', error))
+          }
+          catch (error) {
+            // A throwing record() (e.g. a consumer.active() bug) would
+            // otherwise be an uncaught timer exception; keep the interval
+            // firing regardless.
+            logger.warn('[nuxt-concierge] heartbeat failed', error)
+          }
         }, config.worker.heartbeatInterval)
+        // Never hold the process open on its own — only actual work should.
+        heartbeatTimer.unref?.()
 
-        // Beat once immediately so a worker is visible before the first interval.
-        await driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl).catch(() => {})
+        // Beat once immediately so a worker is visible before the first
+        // interval tick. A worker whose registry writes all fail must stay
+        // loud about it, not silently expire from the registry.
+        try {
+          await driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl)
+        }
+        catch (error) {
+          logger.warn('[nuxt-concierge] heartbeat failed', error)
+        }
       }
 
       state = 'running'

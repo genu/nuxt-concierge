@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createSupervisor, resetSupervisor } from '../../src/runtime/server/supervisor'
+import { createSupervisor, resetSupervisor, getDriver } from '../../src/runtime/server/supervisor'
 
 const baseConfig = {
   role: 'both' as const,
@@ -14,9 +14,16 @@ const baseConfig = {
   },
   jobs: [{ name: 'work', queue: 'default', handler: async () => {} }],
   version: 'test-1',
+  isProduction: false,
 }
 
-afterEach(() => { resetSupervisor() })
+afterEach(async () => {
+  // Real timers first: a test that left fake timers active would otherwise
+  // make resetSupervisor()'s teardown (which itself schedules real-world
+  // async work) hang or behave unpredictably.
+  vi.useRealTimers()
+  await resetSupervisor()
+})
 
 describe('supervisor', () => {
   it('starts in "starting" and reaches "running" after consumers start', async () => {
@@ -67,7 +74,7 @@ describe('supervisor', () => {
     await s.stop()
   })
 
-  it('produces a worker record that snapshots active jobs', async () => {
+  it('produces a worker record with the configured role, queues and concurrency', async () => {
     const s = await createSupervisor(baseConfig)
     await s.startConsumers()
 
@@ -77,8 +84,32 @@ describe('supervisor', () => {
     expect(record.concurrency).toEqual({ default: 2 })
     expect(record.version).toBe('test-1')
     expect(record.state).toBe('running')
-    expect(Array.isArray(record.active)).toBe(true)
 
+    await s.stop()
+  })
+
+  it('snapshots an in-flight job by queue and name on record()', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+
+    const s = await createSupervisor({
+      ...baseConfig,
+      jobs: [{ name: 'work', queue: 'default', handler: async () => { await gate } }],
+    })
+    await s.startConsumers()
+
+    await s.driver.enqueue('default', { name: 'work', payload: {} })
+    // The memory driver's claim loop polls every 10ms; give it a few ticks
+    // to pick the job up and mark it active before we snapshot.
+    await new Promise(resolve => setTimeout(resolve, 40))
+
+    const active = s.record().active
+    expect(active).toHaveLength(1)
+    expect(active[0]).toMatchObject({ queue: 'default', name: 'work' })
+    expect(typeof active[0]?.jobId).toBe('string')
+    expect(typeof active[0]?.startedAt).toBe('number')
+
+    release()
     await s.stop()
   })
 
@@ -95,9 +126,26 @@ describe('supervisor', () => {
     await vi.advanceTimersByTimeAsync(3500)
     expect(beat.mock.calls.length).toBeGreaterThanOrEqual(3)
 
-    vi.useRealTimers()
     await s.stop()
     expect(gone).toHaveBeenCalledWith(s.id)
+  })
+
+  it('stops writing heartbeats once stopped', async () => {
+    vi.useFakeTimers()
+    const s = await createSupervisor({
+      ...baseConfig,
+      worker: { ...baseConfig.worker, heartbeatInterval: 1000 },
+    })
+    const beat = vi.spyOn(s.driver, 'heartbeat')
+
+    await s.startConsumers()
+    await vi.advanceTimersByTimeAsync(2500)
+    const callsBeforeStop = beat.mock.calls.length
+    expect(callsBeforeStop).toBeGreaterThan(0)
+
+    await s.stop()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(beat.mock.calls.length).toBe(callsBeforeStop)
   })
 
   it('reports state "draining" in the record once draining', async () => {
@@ -106,6 +154,16 @@ describe('supervisor', () => {
     s.setState('draining')
 
     expect(s.record().state).toBe('draining')
+    await s.stop()
+  })
+
+  it('getDriver() returns the live driver and route map', async () => {
+    const s = await createSupervisor(baseConfig)
+
+    const { driver, routes } = getDriver()
+    expect(driver).toBe(s.driver)
+    expect(routes).toBe(s.routes)
+
     await s.stop()
   })
 })
