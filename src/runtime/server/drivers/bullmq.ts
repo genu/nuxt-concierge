@@ -121,7 +121,24 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         ...workers.splice(0).map(w => w.close(force)),
         ...[...queues.values()].map(q => q.close()),
       ])
-      await redis?.quit()
+      if (redis) {
+        // quit() waits for the pending command queue to flush — the exact
+        // opposite of what a force close wants — and it REJECTS when the
+        // connection is already ended or in an error state, which is
+        // precisely when this shutdown path is most likely to run (Redis
+        // unreachable). An uncaught rejection here would skip `queues.clear()`
+        // and `redis = undefined` below, so a force close uses disconnect()
+        // (synchronous, cannot reject) and a graceful close catches quit()'s
+        // rejection rather than letting it propagate.
+        if (force) {
+          redis.disconnect()
+        }
+        else {
+          await redis.quit().catch((error: unknown) => {
+            logger.error('[nuxt-concierge] redis.quit() failed while closing', error)
+          })
+        }
+      }
       queues.clear()
       redis = undefined
     },
@@ -207,7 +224,16 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         pause: async () => { await worker.pause(true) },
 
         drain: async () => {
-          while (active.size > 0) await new Promise(r => setTimeout(r, 25))
+          // unref'd so a never-settling handler (active.size staying > 0
+          // forever) cannot hold the process open on its own once the
+          // caller (runDrain) has already moved on past its own deadline —
+          // only real in-flight work should keep the process alive.
+          while (active.size > 0) {
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 25)
+              timer.unref?.()
+            })
+          }
         },
 
         close: async (force) => { await worker.close(force) },
