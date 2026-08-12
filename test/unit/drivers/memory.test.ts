@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
-import { createMemoryDriver } from '../../../src/runtime/server/drivers/memory'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { createMemoryDriver, logger } from '../../../src/runtime/server/drivers/memory'
+import type { ConciergeDriver } from '../../../src/runtime/server/drivers/types'
 import type { WorkerRecord } from '../../../src/runtime/server/types'
 
 const tick = (ms = 20) => new Promise(r => setTimeout(r, ms))
@@ -19,13 +20,29 @@ const record = (over: Partial<WorkerRecord> = {}): WorkerRecord => ({
   ...over,
 })
 
+// Every consumer created via a driver's `consume()` keeps polling every
+// POLL_MS until it is stopped, so any driver we create here must be closed
+// once the test is done or it leaks a recurring timer for the rest of the
+// process. Explicit close()/drain() calls that exist below are testing
+// behaviour, not just cleanup — keep those as they are.
+const drivers: ConciergeDriver[] = []
+const makeDriver = (): ConciergeDriver => {
+  const d = createMemoryDriver()
+  drivers.push(d)
+  return d
+}
+
+afterEach(async () => {
+  await Promise.all(drivers.splice(0).map(d => d.close(true)))
+})
+
 describe('memory driver', () => {
   it('reports its capabilities honestly', () => {
     expect(createMemoryDriver().capabilities).toEqual({ persistent: false, crossProcess: false })
   })
 
   it('processes an enqueued job through a consumer', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     const seen: string[] = []
     d.consume('default', { concurrency: 1 }, async ctx => { seen.push(ctx.name) })
@@ -37,7 +54,7 @@ describe('memory driver', () => {
   })
 
   it('respects concurrency', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     let inFlight = 0
     let peak = 0
@@ -55,7 +72,7 @@ describe('memory driver', () => {
   })
 
   it('reports depth for pending jobs', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     await d.enqueue('default', { name: 'j', payload: {} })
     await d.enqueue('default', { name: 'j', payload: {} })
@@ -64,7 +81,7 @@ describe('memory driver', () => {
   })
 
   it('pause stops fetching but resolves immediately while a job is active', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     let started = 0
     const c = d.consume('default', { concurrency: 1 }, async () => {
@@ -88,7 +105,7 @@ describe('memory driver', () => {
   })
 
   it('drain resolves once in-flight reaches zero', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     const c = d.consume('default', { concurrency: 1 }, async () => { await tick(60) })
     await d.enqueue('default', { name: 'j', payload: {} })
@@ -101,7 +118,7 @@ describe('memory driver', () => {
   })
 
   it('exposes active jobs while running', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     const c = d.consume('default', { concurrency: 1 }, async () => { await tick(80) })
     await d.enqueue('default', { name: 'visible', payload: {} })
@@ -116,7 +133,7 @@ describe('memory driver', () => {
   })
 
   it('stores and expires worker records by TTL', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
 
     await d.heartbeat(record({ id: 'alive' }), 10_000)
@@ -128,7 +145,7 @@ describe('memory driver', () => {
   })
 
   it('deregisters a worker record', async () => {
-    const d = createMemoryDriver()
+    const d = makeDriver()
     await d.init()
     await d.heartbeat(record({ id: 'w9' }), 10_000)
     await d.deregister('w9')
@@ -137,7 +154,12 @@ describe('memory driver', () => {
   })
 
   it('retries a failing job up to maxAttempts', async () => {
-    const d = createMemoryDriver()
+    // Retries and the terminal failure both log; keep this test's output
+    // clean since the logging itself is covered separately below.
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    const d = makeDriver()
     await d.init()
     let attempts = 0
     d.consume('default', { concurrency: 1 }, async () => {
@@ -149,5 +171,60 @@ describe('memory driver', () => {
     await tick(300)
 
     expect(attempts).toBe(3)
+
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+
+  it('driver.close(false) drains an active job before resolving', async () => {
+    const d = makeDriver()
+    await d.init()
+    d.consume('default', { concurrency: 1 }, async () => { await tick(80) })
+    await d.enqueue('default', { name: 'slow', payload: {} })
+    await tick(20)
+
+    const before = Date.now()
+    await d.close(false)
+    // The job had ~60ms left to run; close(false) must have waited for it.
+    expect(Date.now() - before).toBeGreaterThanOrEqual(50)
+  })
+
+  it('driver.close(true) does not wait for an active job', async () => {
+    const d = makeDriver()
+    await d.init()
+    const c = d.consume('default', { concurrency: 1 }, async () => { await tick(120) })
+    await d.enqueue('default', { name: 'slow', payload: {} })
+    await tick(30)
+
+    const before = Date.now()
+    await d.close(true)
+    expect(Date.now() - before).toBeLessThan(60)
+    expect(c.activeCount()).toBe(1)
+  })
+
+  it('logs a terminally failed job instead of swallowing it', async () => {
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    const d = makeDriver()
+    await d.init()
+    let attempts = 0
+    d.consume('default', { concurrency: 1 }, async () => {
+      attempts++
+      throw new Error('always fails')
+    })
+
+    await d.enqueue('default', { name: 'bad', payload: {} })
+    await tick(300)
+
+    expect(attempts).toBe(3)
+    // Two retries logged as warnings, one final failure logged as an error.
+    expect(warnSpy).toHaveBeenCalledTimes(2)
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    const [message] = errorSpy.mock.calls[0] as unknown as [string]
+    expect(message).toContain('failed after 3 attempts')
+
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
   })
 })
