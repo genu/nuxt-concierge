@@ -202,6 +202,39 @@ describe('memory driver', () => {
     expect(c.activeCount()).toBe(1)
   })
 
+  it('retries a job whose handler rejects with null instead of an Error', async () => {
+    // `run` is invoked as `void run(job)` (fire-and-forget), so a TypeError
+    // thrown while reading `.retryable` off a non-object rejection would
+    // become an unhandled rejection that can crash the process, with the job
+    // neither retried nor logged. Rejecting with `null`/`undefined` is
+    // unusual application code, but must not be fatal to the worker.
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+
+    const d = makeDriver()
+    await d.init()
+    let attempts = 0
+    d.consume('default', { concurrency: 1 }, async () => {
+      attempts++
+      // Deliberately non-Error rejection: this is what the fix under test
+      // (memory.ts) must survive.
+      throw null
+    })
+
+    await d.enqueue('default', { name: 'bad', payload: {} })
+    await tick(300)
+
+    process.off('unhandledRejection', unhandled)
+
+    expect(attempts).toBe(3)
+    expect(unhandled).not.toHaveBeenCalled()
+
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+  })
+
   it('logs a terminally failed job instead of swallowing it', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})

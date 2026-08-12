@@ -89,7 +89,13 @@ export const createMemoryDriver = (): ConciergeDriver => {
           })
         }
         catch (error) {
-          const undecodable = (error as { retryable?: boolean }).retryable === false
+          // `run` is invoked as `void run(job)` (fire-and-forget), so a
+          // TypeError thrown HERE (reading `.retryable` off a thrown `null`/
+          // `undefined`/primitive) becomes an unhandled rejection that can
+          // take the whole process down, with the job neither retried nor
+          // logged. Guard the shape before reading the property.
+          const undecodable = typeof error === 'object' && error !== null
+            && (error as { retryable?: boolean }).retryable === false
           const willRetry = !undecodable && job.attempt < MAX_ATTEMPTS
 
           if (willRetry) {
