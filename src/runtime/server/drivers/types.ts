@@ -43,6 +43,13 @@ export interface ConciergeDriver {
 
   enqueue: (queue: string, job: EnqueueOptions) => Promise<{ id: string }>
   consume: (queue: string, opts: ConsumeOptions, onJob?: JobHandler) => Consumer
+  /**
+   * The number of jobs on `queue` that are due now and not yet started —
+   * never jobs scheduled for later (e.g. a delayed/scheduled state). The
+   * no-worker watch in guardrails.ts relies on this: counting not-yet-due
+   * work would fire false alarms on queues that are merely scheduled ahead,
+   * not actually stuck.
+   */
   depth: (queue: string) => Promise<number>
 
   heartbeat: (record: WorkerRecord, ttlMs: number) => Promise<void>

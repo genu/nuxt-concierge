@@ -179,10 +179,18 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
       }
     },
 
+    // Due-now-and-unstarted, matching the memory driver's `runAt <= Date.now()`
+    // filter — not "everything not yet finished". `delayed` is deliberately
+    // excluded: those jobs move into `wait` themselves once their delay
+    // elapses, so counting them here would double-count the future and make
+    // the no-worker watch (guardrails.ts) fire on queues that are only
+    // scheduled ahead, not actually stuck. `prioritized` is included because
+    // BullMQ 5 puts jobs with an explicit priority in their own state, not
+    // `wait` — omitting it would undercount due work.
     depth: async (queue) => {
       const q = queueOf(queue)
-      const [waiting, delayed] = await Promise.all([q.getWaitingCount(), q.getDelayedCount()])
-      return waiting + delayed
+      const [waiting, prioritized] = await Promise.all([q.getWaitingCount(), q.getPrioritizedCount()])
+      return waiting + prioritized
     },
 
     heartbeat: async (record, ttlMs) => {

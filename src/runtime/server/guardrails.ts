@@ -5,7 +5,8 @@ import type { Role } from './types'
 // runtime import here would create a cycle — use the supervisor passed in.
 import type { Supervisor } from './supervisor'
 
-const logger = consola.create({}).withTag('nuxt-concierge')
+/** Exported so tests can spy on it instead of asserting on console output. */
+export const logger = consola.create({}).withTag('nuxt-concierge')
 
 const SERVERLESS_PRESETS = [
   'vercel', 'vercel-edge', 'netlify', 'netlify-edge', 'cloudflare',
