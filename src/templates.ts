@@ -40,7 +40,6 @@ export const createTemplateNuxtPlugin = (
 ) => {
   const nitroPlugin = `
 import { consola } from "consola";
-import { defineNitroPlugin } from "#imports";
 import { $useConcierge } from "#concierge";
 ${importFiles(queues, "queue")}
 ${importFiles(workers, "worker")}
