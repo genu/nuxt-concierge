@@ -5,11 +5,9 @@ import {
   addServerPlugin,
   addServerHandler,
 } from "@nuxt/kit";
-import pluralize from "pluralize";
 import type { UIConfig } from "@bull-board/api/dist/typings/app";
 import type { RedisOptions } from "bullmq";
 import defu from "defu";
-import { underline, yellow } from "colorette";
 import {
   withTrailingSlash,
   withoutTrailingSlash,
@@ -71,11 +69,13 @@ export default defineNuxtModule<ModuleOptions>({
     createTemplateType();
 
     if (nuxt.options.dev) {
+      const plural = (word: string, count: number) =>
+        `${count} ${word}${count === 1 ? "" : "s"}`;
+
       logger.success(
-        `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
+        `Created ${plural("queue", queues.length)} and ${plural(
           "worker",
-          workers.length,
-          true
+          workers.length
         )}`
       );
     }
@@ -95,11 +95,7 @@ export default defineNuxtModule<ModuleOptions>({
         joinURL(withoutTrailingSlash(nuxt.options.devServer.url), "_concierge")
       )}`;
 
-      logger.info(
-        `Concierge Dashboard: ${underline(
-          yellow(withTrailingSlash(viewerUrl))
-        )}`
-      );
+      logger.info(`Concierge Dashboard: ${withTrailingSlash(viewerUrl)}`);
     }
   },
 });

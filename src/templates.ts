@@ -14,7 +14,7 @@ const importFiles = (files: string[], prefix: string = "file") =>
     .join("\n");
 
 const methodFactory = (
-  input: any[],
+  input: unknown[],
   methodName: string,
   importedKey: string,
   importedVarProps: string[]
