@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   defineNuxtModule,
   useLogger,
@@ -5,8 +6,6 @@ import {
   addServerPlugin,
   addServerHandler,
 } from "@nuxt/kit";
-import type { UIConfig } from "@bull-board/api/dist/typings/app";
-import type { RedisOptions } from "bullmq";
 import defu from "defu";
 import {
   withTrailingSlash,
@@ -17,13 +16,11 @@ import {
 import { name, version, configKey, compatibility } from "../package.json";
 import { scanFolder } from "./helplers";
 import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
+import type { ModuleOptions } from "./options";
+import { moduleDefaults } from "./options";
+import { resolveRole } from "./runtime/server/role";
 
-export interface ModuleOptions {
-  redis: RedisOptions;
-  ui: UIConfig;
-  queues: string[];
-  managementUI?: boolean;
-}
+export type { ModuleOptions } from "./options";
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
@@ -32,18 +29,7 @@ export default defineNuxtModule<ModuleOptions>({
     version,
     compatibility,
   },
-  defaults: {
-    ui: {
-      boardTitle: "Concierge",
-    },
-    redis: {
-      host: process.env.NUXT_REDIS_HOST,
-      port: Number(process.env.NUXT_REDIS_PORT),
-      password: process.env.NUXT_REDIS_PASSWORD,
-    },
-    queues: [],
-    managementUI: process.env.NODE_ENV === "development",
-  },
+  defaults: moduleDefaults,
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
@@ -65,7 +51,13 @@ export default defineNuxtModule<ModuleOptions>({
     const queues = await scanFolder("server/concierge/queues");
     const cronJobs = await scanFolder("server/concierge/cron");
 
-    createTemplateNuxtPlugin(queues, workers, cronJobs, options.queues, name);
+    createTemplateNuxtPlugin(
+      queues,
+      workers,
+      cronJobs,
+      Object.keys(options.worker.queues),
+      name
+    );
     createTemplateType();
 
     if (nuxt.options.dev) {
@@ -89,6 +81,31 @@ export default defineNuxtModule<ModuleOptions>({
       nuxt.options.runtimeConfig.concierge,
       options
     );
+
+    const role = resolveRole({
+      env: process.env.CONCIERGE_ROLE,
+      config: options.role,
+      isDev: nuxt.options.dev,
+    });
+
+    // Read at build time; the runtime lets CONCIERGE_VERSION override it, because
+    // a git SHA is usually injected into the deployed process, not the build.
+    let packageVersion: string | undefined;
+    try {
+      packageVersion = JSON.parse(
+        readFileSync(`${nuxt.options.rootDir}/package.json`, "utf8")
+      ).version;
+    } catch {
+      packageVersion = undefined;
+    }
+
+    nuxt.options.runtimeConfig.concierge = defu(
+      { role, version: packageVersion ?? "unknown" },
+      nuxt.options.runtimeConfig.concierge,
+      options
+    );
+
+    logger.info(`Role: ${role}`);
 
     if (nuxt.options.dev) {
       const viewerUrl = `${cleanDoubleSlashes(
