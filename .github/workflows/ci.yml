@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [master, 1.x]
+  pull_request:
+
+# These jobs execute pull-request code, including from forks. Nothing here
+# needs write access — pkg.pr.new comments via its GitHub App, not this token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm dev:prepare
+
+      - run: pnpm lint
+
+      - run: pnpm test
+
+      - run: pnpm prepack
+
+  # Publishes an installable preview build for every commit and PR.
+  # Install with: pnpm add https://pkg.pr.new/nuxt-concierge@<sha>
+  preview:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm dev:prepare
+
+      - run: pnpm prepack
+
+      - run: pnpm dlx pkg-pr-new@0.0.87 publish
