@@ -33,10 +33,23 @@ const fakeNitroApp = () => {
 
 // installShutdown attaches real SIGTERM/SIGINT listeners; clean up after
 // every test so a leaked listener from one test cannot react to a signal
-// emitted by a later one.
+// emitted by a later one. Snapshot-and-restore rather than
+// removeAllListeners: the latter also strips vitest's own SIGTERM/SIGINT
+// handlers (needed for its own teardown/watch-mode interrupt handling), so
+// only the listeners this test file itself adds are removed.
+const preexistingListeners = {
+  SIGTERM: new Set(process.listeners('SIGTERM')),
+  SIGINT: new Set(process.listeners('SIGINT')),
+}
+
 afterEach(() => {
-  process.removeAllListeners('SIGTERM')
-  process.removeAllListeners('SIGINT')
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    for (const listener of process.listeners(signal)) {
+      if (!preexistingListeners[signal].has(listener)) {
+        process.removeListener(signal, listener)
+      }
+    }
+  }
 })
 
 describe('installShutdown', () => {

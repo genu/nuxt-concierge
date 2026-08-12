@@ -27,6 +27,7 @@ export const createSyncDriver = (): ConciergeDriver => {
 
     init: async () => {},
     close: async () => {},
+    isHealthy: () => true,
 
     registerHandler: (queue, name, handler) => {
       handlers.set(key(queue, name), handler)

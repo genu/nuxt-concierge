@@ -41,6 +41,7 @@ export const createMemoryDriver = (): ConciergeDriver => {
     capabilities: { persistent: false, crossProcess: false },
 
     init: async () => {},
+    isHealthy: () => true,
 
     close: async (force) => {
       await Promise.all(consumers.splice(0).map(c => c.close(force)))

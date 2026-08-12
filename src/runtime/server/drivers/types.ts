@@ -38,6 +38,18 @@ export interface ConciergeDriver {
   init: () => Promise<void>
   close: (force: boolean) => Promise<void>
 
+  /**
+   * Whether the driver's underlying connection is currently healthy. `init()`
+   * deliberately does not block on connectivity (ioredis reconnects by
+   * design, and blocking boot on a transient blip would be worse), so this is
+   * what lets the health endpoint refuse to report "running" while a worker's
+   * connection is actually down — instead of a dead-Redis worker reporting
+   * itself healthy and being promoted by a rolling deploy. The in-process
+   * drivers (sync, memory) have no connection to lose and always report
+   * healthy.
+   */
+  isHealthy: () => boolean
+
   /** Associates a handler with a queue+name. Called at boot for every scanned job. */
   registerHandler: (queue: string, name: string, handler: JobHandler) => void
 

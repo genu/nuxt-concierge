@@ -54,6 +54,28 @@ export const isPermanentFailure = (error: unknown): boolean =>
   && error !== null
   && (error as { retryable?: unknown }).retryable === false
 
+/**
+ * Tracks whether the driver's Redis connection(s) are currently healthy.
+ * Factored out as a tiny state machine, independent of any real ioredis/
+ * BullMQ instance, so its transitions are unit-testable without a live Redis
+ * connection: `onError`/`onReady` are exactly the callbacks wired to the
+ * shared client's and each Worker's own `error`/`ready` events below.
+ *
+ * `init()` deliberately does not block on connectivity — ioredis reconnects
+ * by design, so blocking boot on a transient blip would be worse than
+ * letting it settle in the background. This is what lets the health
+ * endpoint, not boot, be the thing that refuses to report "running" while a
+ * connection is actually down.
+ */
+export const createConnectionHealth = () => {
+  let healthy = true
+  return {
+    isHealthy: () => healthy,
+    onError: () => { healthy = false },
+    onReady: () => { healthy = true },
+  }
+}
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
   const bull = resolveBullmqOptions(opts.bullmq)
@@ -62,6 +84,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
   const handlers = new Map<string, JobHandler>()
   const workers: Worker[] = []
   let redis: Redis | undefined
+  const health = createConnectionHealth()
 
   const key = (queue: string, name: string) => `${queue}::${name}`
 
@@ -70,6 +93,11 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
       redis = 'url' in connection
         ? new Redis(connection.url, { maxRetriesPerRequest: null })
         : new Redis({ ...connection, maxRetriesPerRequest: null } as RedisConnectionOptions)
+      redis.on('error', (err) => {
+        health.onError()
+        logger.error('[nuxt-concierge] redis connection error', err)
+      })
+      redis.on('ready', health.onReady)
     }
     return redis
   }
@@ -86,6 +114,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
     capabilities: { persistent: true, crossProcess: true },
 
     init: async () => { client() },
+    isHealthy: health.isHealthy,
 
     close: async (force) => {
       await Promise.allSettled([
@@ -160,7 +189,16 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         },
       )
 
-      worker.on('error', err => logger.error(`[${queue}] worker error`, err))
+      // A worker's Redis connection is independent of the shared `client()`
+      // connection above (BullMQ gives each Worker its own), so it needs its
+      // own error/ready wiring: this is the connection that actually matters
+      // for "can this process process jobs", the exact failure the health
+      // endpoint needs to catch.
+      worker.on('error', (err) => {
+        health.onError()
+        logger.error(`[${queue}] worker error`, err)
+      })
+      worker.on('ready', health.onReady)
 
       workers.push(worker)
 

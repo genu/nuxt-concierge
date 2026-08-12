@@ -50,7 +50,7 @@ export const guardrailDiagnostics = (input: GuardrailInput): Diagnostic[] => {
       level: 'warn',
       message:
         `The "${input.driverName}" driver does not persist jobs: everything queued is lost when this process exits. `
-        + `This is running with NODE_ENV=production.`,
+        + `This is a production build.`,
     })
   }
 

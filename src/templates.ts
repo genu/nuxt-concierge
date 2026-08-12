@@ -202,31 +202,44 @@ export const createTemplateType = () => {
     );
   });
 
-  addTypeTemplate({
-    filename: "types/concierge-handlers.d.ts",
-    write: true,
-    getContents() {
-      return `
+  // Both templates declare modules that only ever exist in the nitro/server
+  // build (#concierge-handlers, #concierge — see the nitro:config alias hook
+  // above). Without `{ nitro: true }`, addTypeTemplate defaults to the
+  // app/client graph, which leaks `declare module "#concierge"` into client
+  // typings: a consumer importing `useQueue` in client code would typecheck
+  // against that ambient declaration and only fail at build time, when the
+  // client bundler can't actually resolve the alias.
+  addTypeTemplate(
+    {
+      filename: "types/concierge-handlers.d.ts",
+      write: true,
+      getContents() {
+        return `
   declare module "#concierge-handlers" {
    const defineJob: typeof import("${resolve(
      "./runtime/server/handlers/defineJob"
    )}").defineJob;
   }
       `;
+      },
     },
-  });
+    { nitro: true }
+  );
 
-  addTypeTemplate({
-    filename: "types/concierge.d.ts",
-    write: true,
-    getContents() {
-      return `
+  addTypeTemplate(
+    {
+      filename: "types/concierge.d.ts",
+      write: true,
+      getContents() {
+        return `
   declare module "#concierge" {
     const useQueue: typeof import("${resolve(
       "./runtime/server/utils/useQueue"
     )}").useQueue;
   }
   `;
+      },
     },
-  });
+    { nitro: true }
+  );
 };

@@ -1,5 +1,6 @@
 import { consola } from 'consola'
 import type { Supervisor } from './supervisor'
+import type { Consumer } from './drivers'
 import type { ActiveJob } from './types'
 
 const logger = consola.create({}).withTag('nuxt-concierge')
@@ -62,6 +63,40 @@ const raceDeadline = async <T>(
 }
 
 /**
+ * Snapshot, force-close, log — the one step shared by both places a drain can
+ * end up needing to force-close: a drain() that timed out/rejected, and a
+ * clean close(false) that itself blows the budget. Factored out so those two
+ * paths cannot drift apart (e.g. one snapshotting before forcing and the
+ * other forgetting to).
+ */
+const forceCloseAndLog = async (
+  consumers: Consumer[],
+  remaining: () => number,
+  reason: string,
+): Promise<ActiveJob[]> => {
+  // Snapshot BEFORE forcing: close(true) can clear local active tracking,
+  // and job IDs are what make abandoned jobs findable in the dashboard
+  // afterwards.
+  const abandoned = consumers.flatMap(c => c.active())
+
+  // Force-close is itself bounded by the shared deadline. Both real drivers
+  // make this call blocking (bullmq's close is worker.close(force) +
+  // redis.quit(); memory's close polls), so an unresponsive Redis must not be
+  // able to hang here and starve the finally block below.
+  await withDeadline(
+    Promise.allSettled(consumers.map(c => c.close(true))).then(() => undefined),
+    remaining(),
+  )
+
+  logger.warn(
+    `${reason} force-closed with ${abandoned.length} job(s) in flight. `
+    + `These are eligible for redelivery: ${abandoned.map(j => j.jobId).join(', ') || 'none'}`,
+  )
+
+  return abandoned
+}
+
+/**
  * The whole sequence shares ONE deadline computed at entry — not just the
  * drain step. pause(), consumer close, driver close and deregistration can
  * each block or reject, and an unbounded shutdown is SIGKILLed by the
@@ -106,34 +141,31 @@ export const runDrain = async (
     const drainFailed = drainRace.timedOut || drainRace.value.some(r => r.status === 'rejected')
 
     if (drainFailed) {
+      // 3/4. Snapshot, force-close, log — see forceCloseAndLog.
       forced = true
-      // 3. Snapshot BEFORE forcing: close(true) can clear local active
-      // tracking, and job IDs are what make abandoned jobs findable in the
-      // dashboard afterwards.
-      abandoned = consumers.flatMap(c => c.active())
-
-      // 4. Force-close is itself bounded by the shared deadline. Both real
-      // drivers make this call blocking (bullmq's close is
-      // worker.close(force) + redis.quit(); memory's close polls), so an
-      // unresponsive Redis must not be able to hang here and starve the
-      // finally block below.
-      await withDeadline(
-        Promise.allSettled(consumers.map(c => c.close(true))).then(() => undefined),
-        remaining(),
-      )
-
-      logger.warn(
-        `Shutdown exceeded ${timeout}ms; force-closed with ${abandoned.length} job(s) in flight. `
-        + `These are eligible for redelivery: ${abandoned.map(j => j.jobId).join(', ') || 'none'}`,
-      )
+      abandoned = await forceCloseAndLog(consumers, remaining, `Shutdown exceeded ${timeout}ms;`)
     }
     else {
-      // 5. Clean path — also bounded, for the same reason as above.
-      await withDeadline(
+      // 5. Clean path — also bounded, for the same reason as above. This can
+      // itself blow the budget: drain() only polls each driver's own
+      // in-processor `active` map, so a job fetched but not yet dispatched
+      // when worker.pause(true) lands leaves that map transiently empty —
+      // drain() returns, drainFailed is false, and close(false) then blocks
+      // on that very job. Treat that exactly like a timed-out/rejected
+      // drain: force-close and report the abandoned IDs, rather than logging
+      // a "drained cleanly" line that isn't true.
+      const cleanClose = await withDeadline(
         Promise.allSettled(consumers.map(c => c.close(false))).then(() => undefined),
         remaining(),
       )
-      logger.info('Workers drained cleanly')
+
+      if (cleanClose.timedOut) {
+        forced = true
+        abandoned = await forceCloseAndLog(consumers, remaining, `close(false) exceeded ${timeout}ms;`)
+      }
+      else {
+        logger.info('Workers drained cleanly')
+      }
     }
   }
   catch (error) {

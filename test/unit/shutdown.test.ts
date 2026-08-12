@@ -9,12 +9,17 @@ const fakeConsumer = (opts: {
   pauseMs?: number
   active?: ActiveJob[]
   clearActiveOnForce?: boolean
+  /** How long a clean close(false) takes to resolve, independent of drain(). */
+  closeCleanMs?: number
 } = {}) => {
   let active = opts.active ?? []
   return {
     pause: vi.fn(async () => { if (opts.pauseMs) await tick(opts.pauseMs) }),
     drain: vi.fn(async () => { await tick(opts.drainMs ?? 0) }),
-    close: vi.fn(async (force: boolean) => { if (force && opts.clearActiveOnForce) active = [] }),
+    close: vi.fn(async (force: boolean) => {
+      if (!force && opts.closeCleanMs) await tick(opts.closeCleanMs)
+      if (force && opts.clearActiveOnForce) active = []
+    }),
     activeCount: () => active.length,
     active: () => active,
   }
@@ -50,6 +55,23 @@ describe('runDrain', () => {
     expect(outcome.forced).toBe(false)
     expect(c.close).toHaveBeenCalledWith(false)
     expect(outcome.abandoned).toEqual([])
+  })
+
+  it('force-closes and reports abandoned jobs when a clean close(false) itself blows the budget', async () => {
+    // Simulates a job fetched but not yet dispatched when worker.pause(true)
+    // lands: the in-processor active map is transiently empty, so drain()
+    // resolves immediately and drainFailed is false — but the job is real,
+    // and close(false) then blocks on it past the shared deadline. The clean
+    // path must not report "drained cleanly" and silently drop the job ID.
+    const active: ActiveJob[] = [{ jobId: 'j-42', queue: 'q0', name: 'slow', startedAt: 1 }]
+    const c = fakeConsumer({ drainMs: 0, active, clearActiveOnForce: true, closeCleanMs: 5000 })
+    const s = fakeSupervisor([c])
+
+    const outcome = await runDrain(s as never, { timeout: 60 })
+
+    expect(outcome.forced).toBe(true)
+    expect(outcome.abandoned.map(j => j.jobId)).toEqual(['j-42'])
+    expect(c.close).toHaveBeenCalledWith(true)
   })
 
   it('force-closes when the drain exceeds the budget', async () => {
