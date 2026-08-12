@@ -117,15 +117,45 @@ export default defineConciergePlugin((nitroApp) => {
       packageVersion: config.version,
     });
 
-    const supervisor = await createSupervisor({ ...config, role, jobs, version });
+    // Same reasoning as CONCIERGE_ROLE above: the built artifact is shared
+    // across every lifecycle-test scenario (a single "pnpm dev:build"), but
+    // driver and the shutdown/stalled timeouts need to vary per spawned
+    // process. nuxt.config.ts's own process.env reads only supply the
+    // baked-in default from whatever env was present at build time; these
+    // three live reads are what let CONCIERGE_DRIVER / CONCIERGE_SHUTDOWN_TIMEOUT
+    // / CONCIERGE_STALLED_INTERVAL flip behaviour per process without a
+    // rebuild (see test/lifecycle/harness.ts).
+    const driver = process.env.CONCIERGE_DRIVER || config.driver;
+
+    const worker = {
+      ...config.worker,
+      shutdownTimeout:
+        Number(process.env.CONCIERGE_SHUTDOWN_TIMEOUT) || config.worker.shutdownTimeout,
+    };
+
+    const bullmq = {
+      ...config.bullmq,
+      stalledInterval:
+        Number(process.env.CONCIERGE_STALLED_INTERVAL) || config.bullmq.stalledInterval,
+    };
+
+    const supervisor = await createSupervisor({
+      ...config,
+      driver,
+      worker,
+      bullmq,
+      role,
+      jobs,
+      version,
+    });
 
     checkGuardrails({
       role,
       capabilities: supervisor.driver.capabilities,
       driverName: supervisor.driver.name,
-      queueCount: Object.keys(config.worker.queues).length,
+      queueCount: Object.keys(worker.queues).length,
       isProduction: config.isProduction,
-      shutdownTimeout: config.worker.shutdownTimeout,
+      shutdownTimeout: worker.shutdownTimeout,
       nitroShutdownTimeout: Number(process.env.NITRO_SHUTDOWN_TIMEOUT) || 30000,
       nitroShutdownDisabled: Boolean(process.env.NITRO_SHUTDOWN_DISABLED),
       preset: config.preset,
@@ -212,6 +242,9 @@ export const createTemplateType = () => {
     const $useConcierge: typeof import("${resolve(
       "./runtime/server/utils/concierge"
     )}").$useConcierge;
+    const useQueue: typeof import("${resolve(
+      "./runtime/server/utils/useQueue"
+    )}").useQueue;
   }
   `;
     },

@@ -37,7 +37,8 @@
     "docs:dev": "nuxi dev docs",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest watch"
+    "test:watch": "vitest watch",
+    "test:lifecycle": "vitest run --config vitest.lifecycle.config.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

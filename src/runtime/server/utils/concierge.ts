@@ -11,6 +11,11 @@ import type {
 } from "bullmq";
 import { useRuntimeConfig } from "#imports";
 
+// Re-exported so `#concierge` carries the phase-1 public API alongside the
+// legacy `$useConcierge` below. Task 13 removes `$useConcierge`; `useQueue`
+// is what replaces it.
+export { useQueue } from "./useQueue";
+
 const logger = consola.create({}).withTag("nuxt-concierge");
 
 const queues: Queue[] = [];
