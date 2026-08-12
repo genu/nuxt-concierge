@@ -1,6 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { encodePayload, decodePayload, UnsupportedEnvelopeError } from '../../src/runtime/server/envelope'
 
+const expectNonRetryable = (fn: () => unknown) => {
+  // Unconditional: fails if fn does not throw at all.
+  expect(fn).toThrow(UnsupportedEnvelopeError)
+
+  const error = (() => {
+    try { fn(); return undefined }
+    catch (e) { return e }
+  })()
+
+  expect(error).toBeInstanceOf(UnsupportedEnvelopeError)
+  expect((error as UnsupportedEnvelopeError).retryable).toBe(false)
+}
+
 describe('payload envelope', () => {
   it('round-trips plain objects', () => {
     const payload = { to: 'a@b.com', count: 3 }
@@ -49,6 +62,9 @@ describe('payload envelope', () => {
   })
 
   it('throws a non-retryable error on an unknown envelope version', () => {
+    expectNonRetryable(() => decodePayload({ v: 99, payload: '[]' }))
+
+    // Also verify the error message mentions the version mismatch
     const err = (() => {
       try {
         decodePayload({ v: 99, payload: '[]' })
@@ -58,48 +74,23 @@ describe('payload envelope', () => {
         return e as UnsupportedEnvelopeError
       }
     })()
-
-    expect(err).toBeInstanceOf(UnsupportedEnvelopeError)
-    expect(err!.retryable).toBe(false)
     expect(err!.message).toMatch(/envelope version 99/)
   })
 
   it('throws on a malformed envelope rather than returning undefined', () => {
-    expect(() => decodePayload({ nope: true })).toThrow(UnsupportedEnvelopeError)
-    expect(() => decodePayload(null)).toThrow(UnsupportedEnvelopeError)
+    expectNonRetryable(() => decodePayload({ nope: true }))
+    expectNonRetryable(() => decodePayload(null as unknown))
   })
 
   it('throws non-retryable error when v is not a number', () => {
-    expect(() => decodePayload({ v: '1', payload: '[]' })).toThrow(
-      UnsupportedEnvelopeError,
-    )
-    // Verify the error instance has retryable = false
-    try {
-      decodePayload({ v: '1', payload: '[]' })
-    }
-    catch (e) {
-      expect(e).toBeInstanceOf(UnsupportedEnvelopeError)
-      expect((e as UnsupportedEnvelopeError).retryable).toBe(false)
-    }
+    expectNonRetryable(() => decodePayload({ v: '1', payload: '[]' }))
   })
 
   it('throws non-retryable error when payload is not a string', () => {
-    try {
-      decodePayload({ v: 1, payload: 42 })
-    }
-    catch (e) {
-      expect(e).toBeInstanceOf(UnsupportedEnvelopeError)
-      expect((e as UnsupportedEnvelopeError).retryable).toBe(false)
-    }
+    expectNonRetryable(() => decodePayload({ v: 1, payload: 42 }))
   })
 
   it('throws non-retryable error when payload is valid JSON but not valid devalue', () => {
-    try {
-      decodePayload({ v: 1, payload: '{"a":1}' })
-    }
-    catch (e) {
-      expect(e).toBeInstanceOf(UnsupportedEnvelopeError)
-      expect((e as UnsupportedEnvelopeError).retryable).toBe(false)
-    }
+    expectNonRetryable(() => decodePayload({ v: 1, payload: '{"a":1}' }))
   })
 })
