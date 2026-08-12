@@ -47,8 +47,17 @@ export interface Supervisor {
    * landing between `deregister()` resolving and `driver.close()` would
    * otherwise re-write the worker record with a fresh TTL, leaving a
    * phantom worker in the registry after the process is already gone.
+   *
+   * Returns a promise that settles once any heartbeat write already in
+   * flight when this was called has itself settled — clearing the interval
+   * alone only stops FUTURE ticks; the most recent tick may have already
+   * launched a fire-and-forget `driver.heartbeat(...)` write that is still
+   * pending. Callers that deregister right after calling this must await it,
+   * or that in-flight write can land after deregister() and recreate the
+   * worker record with a fresh TTL — the exact phantom-worker case this
+   * ordering exists to prevent.
    */
-  stopHeartbeat: () => void
+  stopHeartbeat: () => Promise<void>
   record: () => WorkerRecord
   stop: () => Promise<void>
 }
@@ -118,6 +127,11 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined
   let started = false
   let stopWatch: (() => void) | undefined
+  // Tracks the most recently launched heartbeat write, cleared once it
+  // settles. stopHeartbeat() awaits this so a tick that already fired before
+  // the interval was cleared cannot land after deregister() and recreate the
+  // worker record with a fresh TTL.
+  let pendingHeartbeat: Promise<void> | undefined
 
   const supervisor: Supervisor = {
     id,
@@ -129,11 +143,12 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     getState: () => state,
     setState: (next) => { state = next },
 
-    stopHeartbeat: () => {
+    stopHeartbeat: async () => {
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer)
         heartbeatTimer = undefined
       }
+      await pendingHeartbeat
     },
 
     record: () => ({
@@ -165,8 +180,12 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
 
         heartbeatTimer = setInterval(() => {
           try {
-            void driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl)
+            // Tracked so stopHeartbeat() can await this exact write: clearing
+            // the interval only stops FUTURE ticks, but this one has already
+            // started and must not be allowed to land after deregister().
+            pendingHeartbeat = driver.heartbeat(supervisor.record(), config.worker.heartbeatTtl)
               .catch((error: unknown) => logger.warn('[nuxt-concierge] heartbeat failed', error))
+              .finally(() => { pendingHeartbeat = undefined })
           }
           catch (error) {
             // A throwing record() (e.g. a consumer.active() bug) would
@@ -197,7 +216,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
 
     stop: async () => {
       stopWatch?.()
-      supervisor.stopHeartbeat()
+      await supervisor.stopHeartbeat()
       await Promise.allSettled([...consumers.values()].map(c => c.close(true)))
       consumers.clear()
       await driver.deregister(id).catch(() => {})
