@@ -14,6 +14,11 @@ Queues, workers and background jobs for Nuxt, built on BullMQ.
 - A `memory` driver for zero-dependency local development, and a `sync` driver for tests
 - Guardrails that fail loudly at boot on common misconfiguration, rather than silently later
 
+## Prerequisites
+
+- Nuxt 4
+- Node.js >= 22
+
 ## Quick Setup
 
 1. Add `nuxt-concierge` dependency to your project
