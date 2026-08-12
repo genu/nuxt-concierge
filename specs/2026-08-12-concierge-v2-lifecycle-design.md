@@ -28,7 +28,32 @@ v2 is four specs. This document is #1.
 | 1 | **Lifecycle & process model** | Roles, drain, heartbeat registry, minimal driver SPI. **This doc.** |
 | 2 | Driver SPI | Execution/introspection split, capability flags, build-time validation |
 | 3 | Job API & codegen | `defineJob`, typed `enqueue`, dual-side payload validation |
-| 4 | Dashboard | Standalone SPA over the introspection API, DevTools tab |
+| 4 | Dashboard | Standalone SPA over the introspection API, embedded as a tab in the existing Nuxt DevTools |
+
+### Decisions carried forward to spec 4
+
+Recorded here so they survive until that spec is written.
+
+The DevTools integration is a tab **inside the existing Nuxt DevTools overlay**, alongside
+Pages and Components — not a separate window. It is `addCustomTab()` from
+`@nuxt/devtools-kit` with `view: { type: 'iframe', src: '/_concierge' }`, registered only
+when `nuxt.options.dev`, so it costs nothing in production.
+
+This is nearly free *because* the dashboard is a standalone SPA served from a Nitro route.
+Had it been built as Nuxt UI components injected into the host app, there would be no URL to
+point an iframe at. Three consequences follow:
+
+- The dashboard must be **responsive down to a narrow panel**. The DevTools frame is a
+  fraction of the viewport; a table laid out for 1400px is unusable inside it.
+- The tab needs a **defined state when the dashboard is disabled**. With
+  `managementUI: false` the iframe would 404, so the tab should hide itself or explain
+  rather than render a broken frame.
+- The tab can be a **superset, not a mirror**. The scanned job registry, generated payload
+  types, and the resolved driver/role are useful in dev and inappropriate in production.
+
+It also completes the zero-config story: first run with no `REDIS_URL` → `auto` resolves to
+`memory` → role defaults to `both` → the registry is process-local and therefore visible →
+the DevTools tab shows real queues and workers with no infrastructure running.
 
 ### In scope for phase 1
 
