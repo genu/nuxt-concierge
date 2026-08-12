@@ -183,7 +183,7 @@ export const createTemplateType = () => {
     if (!nitroConfig.alias) return;
 
     nitroConfig.alias["#concierge"] = resolve(
-      "./runtime/server/utils/concierge"
+      "./runtime/server/utils/useQueue"
     );
 
     nitroConfig.alias["#concierge-handlers"] = resolve(
@@ -222,9 +222,6 @@ export const createTemplateType = () => {
     getContents() {
       return `
   declare module "#concierge" {
-    const $useConcierge: typeof import("${resolve(
-      "./runtime/server/utils/concierge"
-    )}").$useConcierge;
     const useQueue: typeof import("${resolve(
       "./runtime/server/utils/useQueue"
     )}").useQueue;
