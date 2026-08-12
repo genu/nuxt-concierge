@@ -30,6 +30,44 @@ v2 is four specs. This document is #1.
 | 3 | Job API & codegen | `defineJob`, typed `enqueue`, dual-side payload validation |
 | 4 | Dashboard | Standalone SPA over the introspection API, embedded as a tab in the existing Nuxt DevTools |
 
+### Decisions carried forward to spec 3
+
+From reading `nuxt-cf-jobs@0.16.0`, which has already solved the typed-payload problem for
+Cloudflare Queues. Four things to adopt rather than reinvent:
+
+**Infer the payload from the handler signature**, not from a separate type parameter or the
+schema:
+
+```ts
+type JobPayloadOf<Job> = Job['handle'] extends (payload: infer P, ...args: any[]) => any ? P : never
+```
+
+The user writes the payload type once, where the handler already needs it.
+
+**Use `const Name extends string`** on `defineJob` so the literal name survives into the type
+map. Without the `const` modifier `name` widens to `string` and the whole lookup collapses.
+
+**AST-extract static routing metadata at build time, and lazy-load the handler module.** This
+is the important one, and it dissolves a tradeoff recorded earlier in this project's design
+discussion. `nuxt-cf-jobs` extracts `name`, `queue`, `maxAttempts`, and flags for
+`input`/`uniqueId` directly from the `defineJob({...})` AST, so the producer can route and
+validate *without importing the handler*, then `load()` dynamically imports the real module
+only when executing. That yields full payload typing **and** a web process that never pulls
+handler code (or its dependencies — `sharp`, `puppeteer`, an SMTP client) into its bundle.
+
+The earlier conclusion in this project was that a string-keyed `enqueue(name, payload)` was
+necessary to avoid eager handler imports. The problem framing was right; the conclusion was
+not. AST extraction plus type-only `typeof import(...)` references gets both properties, so
+spec 3 should not concede the ergonomics.
+
+**Steal their build-time validation set:** `duplicate-name` and `invalid-queue` alongside
+`invalid-definition`. Duplicate job names in particular are silent and destructive.
+
+Also worth evaluating, in rough order of value: their `unique` / `uniqueId(payload)` pair as
+the dedup design; a **transactional outbox**, which enqueues in the same database transaction
+as the write that caused it and closes the "job enqueued but the transaction rolled back" hole;
+and per-job `middleware` plus a `failed` hook.
+
 ### Decisions carried forward to spec 4
 
 Recorded here so they survive until that spec is written.
@@ -65,13 +103,32 @@ the DevTools tab shows real queues and workers with no infrastructure running.
 - Boot-time guardrails
 - Health endpoint (required by the drain design)
 - devalue payload serialization
+- A **minimal, untyped `defineJob`** plus `useQueue().enqueue(name, payload)`
 - The lifecycle test harness
+
+`defineJob` lands here rather than in spec 3 because phase 1 needs *some* way to declare a
+handler — the test harness has to enqueue work and observe it run, and the alpha has to be
+dogfoodable in a real app. It ships without codegen or payload typing; spec 3 adds the
+generated `name → payload` map and makes `enqueue` generic over it. `defineQueue` and
+`defineWorker` are removed: queues are declared by the concurrency map in config, and workers
+are infrastructure rather than userland code.
 
 ### Explicitly out of scope for phase 1
 
-Typed enqueue and codegen; `defineJob`; the cron redesign; dashboard changes (BullBoard
-stays mounted as-is); flows/chains/batches; schema validation; the CLI; the Nuxt 4
-toolchain bump (Renovate-driven, tracked separately).
+Typed enqueue and codegen; dashboard changes (BullBoard stays mounted as-is);
+flows/chains/batches; schema validation; the CLI; the Nuxt 4 toolchain bump (Renovate-driven,
+tracked separately).
+
+**Cron is dropped from the alpha entirely**, not carried forward. The v1 implementation has
+two defects — every cron job runs on the *first* job's schedule (a hardcoded index in the
+codegen), and `obliterate({ force: true })` on every boot wipes in-flight cron jobs across a
+multi-instance deploy — and the codegen layer they live in is being replaced wholesale.
+Shipping known-broken cron in an alpha is worse than shipping none. It returns in spec 3 as a
+property of `defineJob` rather than a separate concept.
+
+**No back-compat shims for v1 configuration.** `redis` → `connection` and the new `role` key
+are breaking changes, which is the point of a major. A migration guide is written when the API
+settles, not incrementally against a moving target.
 
 ## Decisions
 
@@ -97,6 +154,15 @@ The resolved value is validated against `web | worker | both` and throws a boot 
 otherwise. Without that check a `CONCIERGE_ROLE=workers` typo yields a process that starts no
 consumers *and* suppresses the no-worker warning, defeating the exact safeguard the
 production default exists to provide.
+
+**Under `role: worker`, only `/_concierge/health` is served; every other route returns 503.**
+The process still binds a port — that is unavoidable with one artifact — but refusing
+application traffic makes the process's job unambiguous and prevents a misconfigured load
+balancer from routing real requests to a worker.
+
+This is not only hygiene. As the shutdown section below establishes, Nitro drains HTTP
+connections *before* calling `close` hooks, so a worker with no long-lived connections reaches
+the drain almost immediately. Refusing application routes is what guarantees that.
 
 The production default is deliberate: processing must be opted into. The resulting failure
 mode is "jobs pile up and nothing runs" — loud, and caught by the no-worker warning below.
@@ -154,11 +220,54 @@ platform, which loses the clean path entirely — the opposite of the goal.
 Drawing steps 2–5 from a single deadline is what prevents a slow `pause()` from consuming the
 whole budget and leaving nothing for deregistration.
 
-A second signal forces immediate exit.
+A second signal forces immediate exit. Note that Nitro's own handler is registered through a
+once-factory and therefore ignores repeated signals, so the double-signal escape hatch has to
+be ours.
 
-`shutdownTimeout` defaults to **25 000 ms**. Railway, Heroku, and k8s
-`terminationGracePeriodSeconds` all default to roughly 30 s, so this leaves headroom for the
-rest of the close chain.
+#### How Nitro's shutdown actually behaves (verified, nitropack 2.13.4)
+
+This was the spec's main open risk. Resolved by reading
+`nitropack/dist/runtime/internal/shutdown.mjs` and `lib/http-graceful-shutdown.mjs`, wired up
+by the `node-server` and `node-cluster` presets.
+
+Nitro's sequence on `SIGTERM`/`SIGINT`:
+
+1. `preShutdown`
+2. mark shutting down, close the HTTP server, mark idle keep-alive sockets `connection: close`
+3. **poll every 250 ms until all connections are closed, up to `NITRO_SHUTDOWN_TIMEOUT`**
+4. *then* `callHook('close')`, raced against **a second, separate `NITRO_SHUTDOWN_TIMEOUT`**
+5. `process.exit()` — `forceExit` defaults on
+
+Three consequences, all load-bearing:
+
+**The two timeouts are sequential, not nested.** With the 30 s default, worst-case shutdown is
+**60 s**. On any platform with a 30 s grace period the process is `SIGKILL`ed partway through.
+
+**Our drain does not start until HTTP connections have closed.** Step 4 is where our `close`
+hook lives, so a lingering connection in step 3 delays the drain — and can starve it
+completely. Idle keep-alives are handled, but an in-flight SSE stream, long-poll, or slow
+request holds the loop.
+
+**This makes the `role: worker` routing decision load-bearing rather than cosmetic.** A worker
+that serves only `/_concierge/health` has no long-lived connections, so step 3 completes in
+roughly one poll interval and the drain gets effectively the whole budget. That is what keeps
+Option A viable — a worker sharing a process with an SSE endpoint under `role: both` is the
+configuration at risk, not the dedicated worker.
+
+**It does not force Option B.** The separate entrypoint stays an optimization.
+
+Derived requirements:
+
+- `shutdownTimeout` defaults to **20 000 ms**, and must be strictly less than
+  `NITRO_SHUTDOWN_TIMEOUT` with margin for the `finally` block. When Nitro's race wins, our
+  hook is abandoned mid-flight and `process.exit()` follows, so deregistration never runs and
+  only the registry TTL cleans up.
+- **Warn at boot if `shutdownTimeout >= NITRO_SHUTDOWN_TIMEOUT`** (default 30 000).
+- **Warn at boot if `NITRO_SHUTDOWN_DISABLED` is set** — close hooks never fire, so the drain
+  silently never runs and every deploy drops in-flight jobs.
+- Document `NITRO_SHUTDOWN_TIMEOUT` tuning: because the phases are sequential, it should be set
+  to roughly *half* the platform grace period, not all of it. For a 30 s grace, ~12 s is a
+  sane value and `shutdownTimeout` should sit below it.
 
 #### Plugin ordering is load-bearing
 
@@ -335,8 +444,8 @@ export default defineNuxtConfig({
     connection: { url: process.env.REDIS_URL },
     role: undefined,                   // 'web' | 'worker' | 'both'; CONCIERGE_ROLE wins
     worker: {
-      queues: { default: 10 },         // queue → concurrency
-      shutdownTimeout: 25_000,
+      queues: { default: 5 },          // queue → concurrency; also declares the queues
+      shutdownTimeout: 20_000,         // must stay below NITRO_SHUTDOWN_TIMEOUT
       heartbeatInterval: 5_000,
       heartbeatTtl: 15_000,
     },
@@ -359,6 +468,14 @@ actual problem is a missing connection URL.
 
 Zero-config first run is the main adoption lever for the driver abstraction; it is not about
 production portability, since nobody migrates queue engines mid-project.
+
+`worker.queues` does double duty in phase 1: it is both the concurrency map and the queue
+declaration, since `defineQueue` is gone and `defineJob` carries only a queue *name*. A job
+naming a queue absent from this map is a boot-time error rather than a silently orphaned job.
+
+Concurrency defaults to **5** per queue, matching Sidekiq. Ten was the earlier draft and is
+too aggressive as a default — handlers that touch a database will exhaust a typical connection
+pool before the queue saturates.
 
 Deployment shape:
 
@@ -429,10 +546,17 @@ both app versions are visible in the registry during the rollover.
 
 ## Risks and open questions
 
-**Does Nitro impose its own timeout on `close` hooks?** If it does and it is below 25 s, our
-budget must fit inside it — and if it is not configurable, that becomes an argument for
-Option B's separate entrypoint much sooner than "later optimization." **This is the first
-thing the prototype must establish**, and it may shift the drain design.
+**~~Does Nitro impose its own timeout on `close` hooks?~~ Resolved** — yes, 30 s by default via
+`NITRO_SHUTDOWN_TIMEOUT`, applied *twice* in sequence. See "How Nitro's shutdown actually
+behaves" above. Option A survives; the derived requirements are folded into the shutdown
+section.
+
+**`role: both` with long-lived connections is the remaining lifecycle hazard.** Because Nitro
+drains HTTP before calling `close` hooks, an SSE or long-poll endpoint in the same process can
+delay or starve the job drain. Dedicated workers are unaffected. Not blocking phase 1, but the
+lifecycle harness should eventually include a `role: both` scenario holding an open SSE
+connection, and the docs should steer anyone with streaming endpoints toward a separate worker
+process.
 
 **Toolchain staleness.** `pnpm.overrides` pins `nuxi` to 3.10.0 because
 `@nuxt/module-builder@0.5.5` cannot drive modern nuxi. Phase 1 implementation requires the
