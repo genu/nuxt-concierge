@@ -14,7 +14,7 @@ import {
   joinURL,
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
-import { scanJobs, jobNameFromPath } from "./scan";
+import { scanJobs } from "./scan";
 import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
 import type { ModuleOptions } from "./options";
 import { moduleDefaults } from "./options";
@@ -47,17 +47,19 @@ export default defineNuxtModule<ModuleOptions>({
 
     addServerPlugin(resolve(nuxt.options.buildDir, "0.concierge-nuxt-plugin"));
 
-    const jobFiles = await scanJobs();
-    const jobNames = jobFiles.map(jobNameFromPath);
+    const jobs = await scanJobs();
 
-    createTemplateNuxtPlugin(jobFiles, jobNames);
+    createTemplateNuxtPlugin(
+      jobs.map((job) => job.file),
+      jobs.map((job) => job.name)
+    );
     createTemplateType();
 
     if (nuxt.options.dev) {
       const plural = (word: string, count: number) =>
         `${count} ${word}${count === 1 ? "" : "s"}`;
 
-      logger.success(`Discovered ${plural("job", jobFiles.length)}`);
+      logger.success(`Discovered ${plural("job", jobs.length)}`);
     }
 
     // Transpile BullBoard api because its not ESM
