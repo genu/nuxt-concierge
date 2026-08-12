@@ -89,8 +89,13 @@ export default defineNuxtModule<ModuleOptions>({
       packageVersion = undefined;
     }
 
+    // Resolved at build time, not read from the nitro preset at runtime: the
+    // guardrail check only needs it to warn about serverless presets, and
+    // nuxt.options.nitro.preset is the reliable source for that.
+    const preset = nuxt.options.nitro?.preset;
+
     nuxt.options.runtimeConfig.concierge = defu(
-      { role, version: packageVersion ?? "unknown" },
+      { role, version: packageVersion ?? "unknown", preset },
       nuxt.options.runtimeConfig.concierge,
       options
     );
