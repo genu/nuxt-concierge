@@ -195,9 +195,26 @@ this (`src/templates.ts`), which is evidence it fires and is awaited.
 
 The design splits accordingly:
 
-1. **Our own signal listener** does one fast synchronous thing: set `state = 'draining'` so
-   the health endpoint returns 503 while the listener is still up. No awaiting.
+1. **Our own signal listener** does one fast synchronous thing: set `state = 'draining'`. No
+   awaiting.
 2. **The `close` hook** performs the drain and owns the timeout budget.
+
+> **Correction (verified during implementation).** An earlier draft of this document claimed
+> the state flip makes "the health endpoint return 503 so load balancers stop routing." That
+> is **not** what an operator observes on the node-server preset. Nitro's
+> `http-graceful-shutdown` destroys every socket — new and idle keep-alive alike — on signal,
+> independently of our supervisor state, so clients see connection resets during drain rather
+> than a 503 response.
+>
+> The flip still earns its place: it drives the internal drain state machine, and it closes
+> the narrow window before Nitro tears sockets down. But the operational mechanism that
+> removes an instance from rotation is **connection refusal, not a 503**, and the
+> documentation must say so.
+>
+> One consequence for testing: this guarantee is not end-to-end observable, so it has no
+> lifecycle-harness coverage by design. Every attempt to assert it either tautologises or
+> ends up testing Nitro rather than this module. The state→status mapping is covered by unit
+> tests instead.
 
 Drain sequence inside the `close` hook. **The whole sequence is bounded by one deadline
 computed at entry, not just the drain step.** `pause()`, consumer close, driver close, and
@@ -288,6 +305,12 @@ manifests only as mysterious deploy-time job failures.
   abandoned at force-close is not retried until it elapses. Users will report this as "jobs
   hang for 30 s after every deploy," so it belongs in the docs beside the at-least-once
   guarantee. Tests set it to 1 s.
+- **`lockDuration` is not exposed, and that is a gap** (found while building the lifecycle
+  harness). Recovery after a `SIGKILL` is gated by BullMQ's `lockDuration` default, not by
+  `stalledInterval`, so an ungracefully-killed worker's jobs take up to ~30 s to become
+  eligible for redelivery even with `stalledInterval` lowered. This is real product behaviour
+  and the docs must state it. Exposing `lockDuration` alongside `stalledInterval` is the
+  obvious follow-up; it was out of scope for phase 1.
 
 ### Worker registry
 
