@@ -6,8 +6,9 @@ This file is the index and the current state.
 | # | Spec | State | Document |
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
-| 3 | **Job API & codegen** | Not written — **recommended next** | — |
+| 3 | **Job API & typed enqueue** | Designed — **plan not yet written** | [design](2026-08-13-concierge-v2-job-api-design.md) |
 | 4 | **Dashboard** | Not written | — |
+| 5 | Cron & dedup | Not written — split out of spec 3 | — |
 | 2 | Driver introspection SPI | Not written — **fold into spec 4** | — |
 
 ## Why the order changed
@@ -24,6 +25,25 @@ dashboard can shape it against real screens.
 wrong — workers surviving deploys — but nothing in it is a reason to *choose* this module over
 wiring BullMQ directly. Typed `enqueue` is. It is also independent of specs 2 and 4, so it can
 proceed immediately.
+
+## Spec 3 was narrowed, and spec 5 split out of it
+
+"Job API & codegen" turned out to be seven things under one heading. Spec 3 now carries four of
+them — typed `enqueue`, dual-side payload validation, per-job retry options, and a retry contract
+the three drivers agree on. **Cron and dedup moved to spec 5**, because cron's hard part is
+schedule reconciliation across a multi-instance deploy rather than the `defineJob` key, and it
+would have dominated the spec.
+
+Two recommendations the phase 1 document carried forward did not survive the design, and are
+corrected in both documents: **`const Name extends string` is unnecessary** (names are resolved
+at build time by the scanner, not by the type system), and **AST extraction of `defineJob`
+metadata is dropped rather than deferred** — dual-side validation needs to *execute* a schema,
+which source-text extraction cannot do. See
+[the spec 3 design](2026-08-13-concierge-v2-job-api-design.md) for the full reasoning.
+
+One item is a hard prerequisite rather than a nicety: **`pnpm typecheck` must run in CI**, with
+its 12 known errors fixed. Spec 3's deliverable is types, so shipping it behind a typecheck
+nobody runs leaves the central promise unverified.
 
 ## Phase 1 outcome
 

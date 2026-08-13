@@ -21,16 +21,22 @@ awkward call signature; they do not forgive jobs vanishing on deploy.
 
 ## Scope decomposition
 
-v2 is four specs. This document is #1.
+v2 was decomposed into four specs. This document is #1. Spec 3 was later narrowed and **spec 5
+split out of it**; see [the roadmap](README.md) for current state.
 
 | # | Spec | Summary |
 | - | ---- | ------- |
 | 1 | **Lifecycle & process model** | Roles, drain, heartbeat registry, minimal driver SPI. **This doc.** |
 | 2 | Driver SPI | Execution/introspection split, capability flags, build-time validation |
-| 3 | Job API & codegen | `defineJob`, typed `enqueue`, dual-side payload validation |
+| 3 | Job API & typed enqueue | `defineJob<Payload>`, typed `enqueue`, dual-side payload validation, per-job retries |
 | 4 | Dashboard | Standalone SPA over the introspection API, embedded as a tab in the existing Nuxt DevTools |
+| 5 | Cron & dedup | Split out of spec 3 — cron schedules, `unique` / `uniqueId(payload)` |
 
 ### Decisions carried forward to spec 3
+
+> **Two of the four recommendations below did not survive spec 3's design and are corrected
+> in place: `const Name extends string` is unnecessary, and AST extraction is dropped rather
+> than deferred. See [the spec 3 design](2026-08-13-concierge-v2-job-api-design.md).**
 
 From reading `nuxt-cf-jobs@0.16.0`, which has already solved the typed-payload problem for
 Cloudflare Queues. Four things to adopt rather than reinvent:
@@ -44,8 +50,16 @@ type JobPayloadOf<Job> = Job['handle'] extends (payload: infer P, ...args: any[]
 
 The user writes the payload type once, where the handler already needs it.
 
-**Use `const Name extends string`** on `defineJob` so the literal name survives into the type
-map. Without the `const` modifier `name` widens to `string` and the whole lookup collapses.
+~~**Use `const Name extends string`** on `defineJob` so the literal name survives into the type
+map. Without the `const` modifier `name` widens to `string` and the whole lookup collapses.~~
+
+**Corrected:** unnecessary here. This is load-bearing in `nuxt-cf-jobs` because the name is a
+property of the runtime options object, so the type system is the only thing that can carry the
+literal. In concierge `scanJobs()` derives names from file paths at build time, so codegen emits
+the map with literal keys and `keyof ConciergeJobMap` is a literal union for free. Adopting the
+`const` modifier would also have foreclosed spec 3's chosen API shape, since a `const` type
+parameter and an explicit `defineJob<Payload>` type argument cannot coexist — TypeScript has no
+partial type-argument inference.
 
 **AST-extract static routing metadata at build time, and lazy-load the handler module.** This
 is the important one, and it dissolves a tradeoff recorded earlier in this project's design
@@ -59,6 +73,15 @@ The earlier conclusion in this project was that a string-keyed `enqueue(name, pa
 necessary to avoid eager handler imports. The problem framing was right; the conclusion was
 not. AST extraction plus type-only `typeof import(...)` references gets both properties, so
 spec 3 should not concede the ergonomics.
+
+**Corrected: AST extraction is dropped, not deferred — nothing replaces it.** The half of this
+that holds is the type-only `typeof import(...)` reference, which is what spec 3 actually uses;
+the ergonomics were not conceded. The half that does not hold is AST extraction, because
+dual-side validation needs to *execute* a schema and reading source text cannot produce a
+runnable object — obtaining one requires importing the module the extraction existed to avoid.
+Spec 3 retains eager static imports and treats the lean-bundle problem as a bundling concern,
+grouped with the deferred `worker: { entry: 'separate' }` item below rather than solved inside
+the job API.
 
 **Steal their build-time validation set:** `duplicate-name` and `invalid-queue` alongside
 `invalid-definition`. Duplicate job names in particular are silent and destructive.
@@ -123,8 +146,10 @@ tracked separately).
 two defects — every cron job runs on the *first* job's schedule (a hardcoded index in the
 codegen), and `obliterate({ force: true })` on every boot wipes in-flight cron jobs across a
 multi-instance deploy — and the codegen layer they live in is being replaced wholesale.
-Shipping known-broken cron in an alpha is worse than shipping none. It returns in spec 3 as a
-property of `defineJob` rather than a separate concept.
+Shipping known-broken cron in an alpha is worse than shipping none. It returns as a property of
+`defineJob` rather than a separate concept — **in spec 5, not spec 3**, because its hard part is
+schedule reconciliation across a multi-instance deploy rather than the `defineJob` key, and it
+would have dominated spec 3.
 
 **No back-compat shims for v1 configuration.** `redis` → `connection` and the new `role` key
 are breaking changes, which is the point of a major. A migration guide is written when the API
@@ -141,7 +166,7 @@ settles, not incrementally against a moving target.
 | Queue engine | BullMQ, unmodified | Reliability primitives are the hard part and are already solved |
 | Postgres driver | Deferred to pg-boss | Same principle: do not hand-roll `SKIP LOCKED` claim logic |
 | Serialization | devalue `stringify`/`parse` | Preserves `Date`, `Map`, `Set`, `undefined`; already a Nuxt dependency. **Never `uneval`** — it emits JS source requiring `eval`, which is a deserialization RCE if anything can write to Redis. |
-| Delivery guarantee | At-least-once | Follows from force-close + stalled recovery; motivates dedup keys in spec 3 |
+| Delivery guarantee | At-least-once | Follows from force-close + stalled recovery; motivates dedup keys in spec 5 |
 
 ## Architecture
 
@@ -531,7 +556,11 @@ worker: CONCIERGE_ROLE=worker node .output/server/index.mjs
 BullMQ's stalled recovery re-queues it, but once `maxStalledCount` is exhausted it moves to
 `failed` instead. "Will run again" would overstate the guarantee. Handlers must be idempotent
 regardless. This is correct semantics rather than a shortcoming, and it is what motivates
-first-class dedup keys in spec 3.
+first-class dedup keys in spec 5.
+
+The idempotency requirement gets sharper in spec 3, which changes the default from effectively
+one attempt to three: a non-idempotent handler that previously failed once and stopped will run
+its side effects up to three times.
 
 **The `memory` driver loses everything on process death.** Acceptable for a dev/test driver,
 but it must be stated loudly rather than implied.
