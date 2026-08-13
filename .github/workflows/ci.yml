@@ -49,6 +49,11 @@ jobs:
 
       - run: pnpm lint
 
+      # Gated as of spec 3, whose entire deliverable is types. Twelve errors
+      # accumulated while this was unwired, including one that broke the
+      # library's primary usage (an API route that enqueues and returns JSON).
+      - run: pnpm typecheck
+
       - run: pnpm test
 
       - run: pnpm test:lifecycle

@@ -226,22 +226,44 @@ export const createTemplateType = () => {
     { nitro: true }
   );
 
-  addTypeTemplate(
-    {
-      filename: "types/concierge.d.ts",
-      write: true,
-      getContents() {
-        return `
+  // `#concierge` must be declared in BOTH graphs.
+  //
+  // The nitro copy is the one that matters for correctness of server code.
+  // The app copy exists because nitro generates `types/nitro-routes.d.ts`
+  // containing `typeof import('<rootDir>/server/api/foo.post')` for every
+  // server route, and `.nuxt/nuxt.d.ts` references it — so every server
+  // route handler is pulled into the APP program to compute $fetch's return
+  // types. A route that imports `#concierge` (an API route that enqueues a
+  // job and returns JSON — the primary documented usage) therefore failed
+  // with TS2307 in the app program while resolving fine in the server one.
+  //
+  // The cost, accepted deliberately: client code importing `useQueue` now
+  // typechecks and fails later, at build time, when the client bundler
+  // cannot resolve the alias. That footgun is loud and visible in review;
+  // breaking correct server code is worse than failing to prevent incorrect
+  // client code.
+  const conciergeModule = `
   declare module "#concierge" {
     const useQueue: typeof import("${resolve(
       "./runtime/server/utils/useQueue"
     )}").useQueue;
   }
   `;
-      },
+
+  addTypeTemplate(
+    {
+      filename: "types/concierge.d.ts",
+      write: true,
+      getContents: () => conciergeModule,
     },
     { nitro: true }
   );
+
+  addTypeTemplate({
+    filename: "types/concierge-app.d.ts",
+    write: true,
+    getContents: () => conciergeModule,
+  });
 };
 
 /**
