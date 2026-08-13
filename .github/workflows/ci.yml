@@ -54,6 +54,8 @@ jobs:
       # library's primary usage (an API route that enqueues and returns JSON).
       - run: pnpm typecheck
 
+      - run: pnpm test:types
+
       - run: pnpm test
 
       - run: pnpm test:lifecycle

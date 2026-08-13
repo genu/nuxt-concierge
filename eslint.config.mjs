@@ -33,4 +33,18 @@ export default createConfigForNuxt()
       // ways an assertion can silently never run.
       "vitest/no-conditional-expect": "error",
     },
+  })
+  .append({
+    // Type-level tests assert with `expectTypeOf`, not `expect`.
+    // eslint-plugin-vitest only recognises `expectTypeOf` as an assertion when
+    // its `typecheck` setting is on (it is gated on exactly that), so without
+    // this block every *.test-d.ts trips vitest/expect-expect and `pnpm lint`
+    // fails before `pnpm test:types` ever runs.
+    files: ["test/types/**/*.test-d.ts"],
+    plugins: { vitest },
+    settings: { vitest: { typecheck: true } },
+    rules: {
+      "vitest/expect-expect": ["error", { assertFunctionNames: ["expect", "expectTypeOf"] }],
+      "vitest/no-conditional-expect": "error",
+    },
   });
