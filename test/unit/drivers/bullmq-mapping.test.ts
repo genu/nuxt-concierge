@@ -186,7 +186,7 @@ describe('bullmq enqueue retry options', () => {
     )
   })
 
-  it('omits attempts entirely when not supplied rather than sending 0', async () => {
+  it('does not send a defaulted attempts value when none was supplied', async () => {
     const add = vi.fn().mockResolvedValue({ id: '1' })
     const driver = createBullmqDriver({ connection: { url: 'redis://localhost:6379' } })
     vi.spyOn(Queue.prototype, 'add').mockImplementation(add)

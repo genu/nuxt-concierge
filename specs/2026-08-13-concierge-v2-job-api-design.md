@@ -499,10 +499,25 @@ retries; delay between retry k and k+1 matches the observed formula.
 Real Redis, real built output:
 
 - a job that fails once is retried and completes across a real drain
-- an invalid payload dead-letters immediately, with attempts-made of 1 against `attempts: 3`
+- ~~an invalid payload dead-letters immediately, with attempts-made of 1 against `attempts: 3`~~
+  — **knowingly deferred, not built.** Producer-side validation (`validateOnEnqueue`) makes this
+  scenario near-impossible to construct honestly at this layer: the same build's producer schema
+  rejects the payload before it is ever enqueued, so triggering the worker-side path requires two
+  schemas or two builds (e.g. enqueue against an older/looser schema, then have a newer/stricter
+  build's worker reject it) — deliberately out of scope for a single-build lifecycle harness. The
+  behaviour IS covered, just not at this layer:
+  - `test/unit/drivers/bullmq-mapping.test.ts` — "converts a retryable:false error thrown by a
+    registered handler into UnrecoverableError", against the driver's real captured processor.
+  - `test/unit/retry-conformance.test.ts` — "stops immediately on a permanent failure, without
+    consuming remaining attempts", run against both the memory driver and (when `REDIS_URL` is
+    set, as it always is under `pnpm test:lifecycle`) a real `bullmq` driver against real Redis —
+    a permanent failure with `attempts: 5` consumes exactly one attempt.
 
-Per the established convention, both must be observed failing against the broken behaviour
-before they count.
+  This requirement is recorded here rather than silently dropped, and its coverage is real rather
+  than claimed: both tests above fail if the behaviour they check regresses.
+
+Per the established convention, the scenario that was built must be observed failing against the
+broken behaviour before it counts.
 
 ### The question to ask of every assertion
 

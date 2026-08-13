@@ -206,12 +206,13 @@ describe('supervisor', () => {
     await s.stop()
   })
 
-  it('getDriver() returns the live driver and registry', async () => {
+  it('getDriver() returns the live driver, registry and defaults', async () => {
     const s = await createSupervisor(baseConfig)
 
-    const { driver, registry } = getDriver()
+    const { driver, registry, defaults } = getDriver()
     expect(driver).toBe(s.driver)
     expect(registry).toBe(s.registry)
+    expect(defaults).toBe(s.config.defaults)
 
     await s.stop()
   })

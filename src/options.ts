@@ -101,7 +101,12 @@ export const resolveModuleOptions = (options: ModuleOptions): ResolvedConciergeO
       // `queues: { mail: 2 }` would keep the default `default: 5` as well —
       // starting a consumer for a queue they never declared, and making the
       // no-worker guardrail watch a queue nothing enqueues to.
-      queues: options.worker?.queues ?? moduleDefaults.worker.queues,
+      //
+      // Shallow-copied on the no-override branch: `moduleDefaults` is a
+      // module-level singleton, and handing out the same object reference to
+      // every caller that omits `worker.queues` would let one caller's
+      // in-place mutation corrupt the default for every later resolution.
+      queues: options.worker?.queues ?? { ...moduleDefaults.worker.queues },
     },
   }
 }

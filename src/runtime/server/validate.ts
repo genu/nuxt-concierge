@@ -56,6 +56,14 @@ export const formatIssuePath = (issue: StandardSchemaV1.Issue): string => {
  * Messages are NOT redacted here: this error returns to the caller that just
  * supplied the data, in that caller's own process, and never reaches the
  * queue backend.
+ *
+ * Validators must not mutate their input in place. The caller hands
+ * `driver.enqueue` this SAME `payload` object reference after this function
+ * returns, so a validator that assigns defaults onto the input — instead of
+ * onto a copy, as Zod, Valibot and ArkType all do — would half-transform what
+ * gets serialized, and the consumer would then validate an already-partly-
+ * transformed value: exactly the failure the discard-the-result, transform-
+ * once invariant above exists to prevent.
  */
 export const validateOnEnqueue = async (
   schema: StandardSchemaV1,
@@ -106,7 +114,33 @@ export const validateOnConsume = async <Out>(
   jobName: string,
   payload: unknown,
 ): Promise<Out> => {
-  const result = await schema['~standard'].validate(payload)
+  let result: StandardSchemaV1.Result<Out>
+
+  try {
+    result = await schema['~standard'].validate(payload)
+  }
+  catch (err) {
+    // A validator that REJECTS rather than returning `{ issues }` has no
+    // issues array to report, but the failure is exactly as permanent: a
+    // schema that throws on this payload throws identically on every retry,
+    // so this must still short-circuit the attempt budget rather than burn
+    // it. Report the thrown value's type/shape only, never its message — the
+    // same reasoning as the branch below and as `describeEnvelopeShape` in
+    // envelope.ts: this text becomes BullMQ's `failedReason`, persisted in
+    // Redis and logged, and a thrown error's message is exactly as
+    // untrustworthy as an issue's message would be.
+    const shape = err instanceof Error
+      ? `Error (${err.name})`
+      : `non-Error (${typeof err})`
+
+    throw new JobPayloadInvalidError(
+      `payload for job "${jobName}" failed validation in the worker: `
+      + `the schema's validate() threw instead of returning issues (threw a ${shape}). `
+      + `The thrown value's message is omitted because this text is persisted as the job's failedReason.`,
+      jobName,
+      [],
+    )
+  }
 
   if (result.issues) {
     const paths = [...new Set(result.issues.map(formatIssuePath))].sort().join(', ')

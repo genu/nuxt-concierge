@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 import {
   JobPayloadInvalidError,
   formatIssuePath,
@@ -7,6 +8,22 @@ import {
   validateOnEnqueue,
 } from '../../src/runtime/server/validate'
 import { isPermanentFailure } from '../../src/runtime/server/drivers/bullmq'
+
+/**
+ * A hand-rolled Standard Schema whose `validate` REJECTS rather than
+ * returning `{ issues }`. Zod, Valibot and ArkType never do this — they
+ * always resolve to a result object — but nothing in the Standard Schema
+ * spec forbids it, and this module accepts any conforming validator.
+ */
+const throwingSchema: StandardSchemaV1<unknown, unknown> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test-fixture',
+    validate: async () => {
+      throw new Error('exploded while looking at secret-payload-value-42')
+    },
+  },
+}
 
 const schema = z.object({
   to: z.string(),
@@ -123,6 +140,31 @@ describe('validateOnConsume', () => {
     // The whole driver integration: no bullmq/memory change is needed because
     // both already branch on `retryable === false`.
     expect(isPermanentFailure(error)).toBe(true)
+  })
+
+  it('converts a validator that THROWS, instead of returning issues, into a non-retryable error', async () => {
+    // A validation failure that returns `{ issues }` already dead-letters
+    // immediately via the branch above. A validator that REJECTS instead has
+    // no issues array — without this, the thrown error would carry no
+    // `retryable: false` and a failure guaranteed to repeat identically would
+    // burn the entire attempt budget instead of dead-lettering on the first
+    // attempt.
+    const error = await validateOnConsume(throwingSchema, 'j', { anything: true })
+      .catch((e: unknown) => e as JobPayloadInvalidError)
+
+    expect(error).toBeInstanceOf(JobPayloadInvalidError)
+    expect(error.retryable).toBe(false)
+  })
+
+  it('does not leak the thrown error message (or any payload value) when a validator throws', async () => {
+    const error = await validateOnConsume(throwingSchema, 'j', { secret: 'secret-payload-value-42' })
+      .catch((e: unknown) => e as JobPayloadInvalidError)
+
+    // A thrown error has no issues array to redact selectively, so the whole
+    // thrown message is omitted — same reasoning as the issues branch above:
+    // this text is persisted as BullMQ's `failedReason`.
+    expect(error.message).not.toContain('secret-payload-value-42')
+    expect(error.message).not.toContain('exploded')
   })
 })
 

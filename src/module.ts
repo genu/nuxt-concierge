@@ -21,7 +21,7 @@ import {
   createTemplateInternalTypes,
 } from "./templates";
 import type { ModuleOptions } from "./options";
-import { moduleDefaults, resolveModuleOptions } from "./options";
+import { resolveModuleOptions } from "./options";
 import { resolveRole } from "./runtime/server/role";
 
 export type { ModuleOptions } from "./options";
@@ -33,7 +33,14 @@ export default defineNuxtModule<ModuleOptions>({
     version,
     compatibility,
   },
-  defaults: moduleDefaults,
+  // Deliberately NOT `defaults: moduleDefaults`. @nuxt/kit runs
+  // `defu(inlineOptions, nuxtConfigOptions, optionsDefaults)` before setup()
+  // executes, and defu deep-merges — so a `defaults` option here would merge
+  // the user's `worker.queues` map with moduleDefaults.worker.queues before
+  // `resolveModuleOptions` below ever sees it, silently reintroducing the
+  // `default` queue underneath any replacement queue map the user declared.
+  // `resolveModuleOptions` is the single resolution point and already fills
+  // every field from `moduleDefaults` itself.
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);

@@ -100,6 +100,13 @@ Drivers:
 
 Jobs live in `server/jobs/`. The filename is the job name — `server/jobs/mail/send.ts` is `mail/send`.
 
+> **Import everything explicitly in job files.** The generated job map does `typeof import('<job
+> file>')` per job, which pulls every job *module* into the app's TypeScript program — not just
+> Nitro's. A job file relying on a Nitro auto-import (e.g. calling `useRuntimeConfig()` with no
+> import statement) typechecks fine in the nitro graph but fails in the app graph. Import
+> `useRuntimeConfig`, `defineJob`, and anything else your job file uses, the same way the examples
+> below do.
+
 ### Typed with an interface
 
 ```ts
@@ -208,6 +215,8 @@ concierge: {
 ```
 
 A payload that fails schema validation is **never** retried — it would fail identically every time — so it dead-letters immediately without consuming the attempt budget.
+
+`attempts` must be at least `1`. Nothing validates this: `attempts: 0` is not nullish, so it passes through unvalidated and both drivers run the job exactly once — `0` silently means "once", not "never".
 
 > **Handlers must be idempotent.** Delivery is at-least-once and the default is now three attempts, so a handler that charges a card or sends an email can run more than once for the same job. Make the side effect safe to repeat, or guard it with your own idempotency key.
 
