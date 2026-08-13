@@ -153,7 +153,7 @@ describe('memory driver', () => {
     expect(await d.workers()).toEqual([])
   })
 
-  it('retries a failing job up to maxAttempts', async () => {
+  it('retries a failing job up to the configured attempts', async () => {
     // Retries and the terminal failure both log; keep this test's output
     // clean since the logging itself is covered separately below.
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {})
@@ -167,7 +167,7 @@ describe('memory driver', () => {
       throw new Error('always fails')
     })
 
-    await d.enqueue('default', { name: 'bad', payload: {} })
+    await d.enqueue('default', { name: 'bad', payload: {}, attempts: 3 })
     await tick(300)
 
     expect(attempts).toBe(3)
@@ -223,7 +223,7 @@ describe('memory driver', () => {
       throw null
     })
 
-    await d.enqueue('default', { name: 'bad', payload: {} })
+    await d.enqueue('default', { name: 'bad', payload: {}, attempts: 3 })
     await tick(300)
 
     process.off('unhandledRejection', unhandled)
@@ -247,7 +247,7 @@ describe('memory driver', () => {
       throw new Error('always fails')
     })
 
-    await d.enqueue('default', { name: 'bad', payload: {} })
+    await d.enqueue('default', { name: 'bad', payload: {}, attempts: 3 })
     await tick(300)
 
     expect(attempts).toBe(3)
@@ -255,7 +255,7 @@ describe('memory driver', () => {
     expect(warnSpy).toHaveBeenCalledTimes(2)
     expect(errorSpy).toHaveBeenCalledTimes(1)
     const [message] = errorSpy.mock.calls[0] as unknown as [string]
-    expect(message).toContain('failed after 3 attempts')
+    expect(message).toContain('failed after 3 attempt(s)')
 
     errorSpy.mockRestore()
     warnSpy.mockRestore()

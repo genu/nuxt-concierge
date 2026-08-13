@@ -57,6 +57,13 @@ jobs:
       - run: pnpm test:types
 
       - run: pnpm test
+        env:
+          # The retry conformance table runs its bullmq half only when a real
+          # Redis is reachable (test/unit/retry-conformance.test.ts). Without
+          # this the table silently degrades to memory-only in the one place it
+          # is automated. `pnpm test` stays Redis-free locally, where the
+          # variable is simply unset.
+          REDIS_URL: redis://127.0.0.1:6379
 
       - run: pnpm test:lifecycle
         env:
