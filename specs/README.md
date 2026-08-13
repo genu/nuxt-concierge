@@ -6,7 +6,7 @@ This file is the index and the current state.
 | # | Spec | State | Document |
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
-| 3 | **Job API & typed enqueue** | **Implemented** — PR #19 | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) |
+| 3 | **Job API & typed enqueue** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) · [decisions](2026-08-13-spec3-decisions.md) |
 | 4 | **Dashboard** | Not written | — |
 | 5 | Cron & dedup | Not written — split out of spec 3 | — |
 | 2 | Driver introspection SPI | Not written — **fold into spec 4** | — |
@@ -51,9 +51,13 @@ Shipped as `nuxt-concierge@2.0.0-alpha` on the npm `next` tag (`latest` remains 
 SLSA provenance via trusted publishing. 175 unit tests, 10 lifecycle scenarios against real
 Redis including the two-process production shape.
 
-**Read [the decisions record](2026-08-13-phase1-decisions.md) before starting spec 3.** It
-carries the constraints, deferred items and hard-won facts that the design documents do not,
-including several that are build-breaking if violated.
+**Read both decisions records before starting spec 4 or 5** —
+[phase 1](2026-08-13-phase1-decisions.md) and [spec 3](2026-08-13-spec3-decisions.md). They carry
+the constraints, deferred items and hard-won facts that the design documents do not, including
+several that are build-breaking or silently behaviour-breaking if violated. Spec 3's first
+section in particular covers the generated-types machinery, which is easy to "simplify" into
+silent failure — `export *` inside a generated `.d.ts` and a nitro-only alias declaration both
+fail without an error.
 
 ## Process notes worth carrying forward
 
