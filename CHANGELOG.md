@@ -1,6 +1,17 @@
 # Changelog
 
 
+## [2.0.0-alpha](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v1.0.60...nuxt-concierge-v2.0.0-alpha) (2026-08-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* the public API is now defineJob and useQueue. Queues are declared by concierge.worker.queues, workers are infrastructure selected by CONCIERGE_ROLE, and the redis option becomes connection.
+
+### 🚀 Features
+
+* v2 phase 1 — standalone worker process and graceful job draining ([#13](https://github.com/genu/nuxt-concierge/issues/13)) ([f95aee6](https://github.com/genu/nuxt-concierge/commit/f95aee6cf3a3b3d5c54df88cd0712c4dca90103f))
+
 ## v1.0.60
 
 [compare changes](https://github.com/genu/nuxt-concierge/compare/v1.0.59...v1.0.60)
@@ -654,4 +665,3 @@
 - Eugen Istoc <eugenistoc@gmail.com>
 
 ## v1.0.1
-
