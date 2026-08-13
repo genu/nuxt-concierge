@@ -7,9 +7,9 @@ This file is the index and the current state.
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
 | 3 | **Job API & typed enqueue** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) · [decisions](2026-08-13-spec3-decisions.md) |
-| 4 | **Dashboard** | Not written | — |
+| 4 | **Dashboard & driver introspection** | **Designed** — plan not yet written | [design](2026-08-13-concierge-v2-dashboard-design.md) |
 | 5 | Cron & dedup | Not written — split out of spec 3 | — |
-| 2 | Driver introspection SPI | Not written — **fold into spec 4** | — |
+| 2 | Driver introspection SPI | **Folded into spec 4**, as recommended below | [design](2026-08-13-concierge-v2-dashboard-design.md) |
 
 ## Why the order changed
 
@@ -41,9 +41,10 @@ metadata is dropped rather than deferred** — dual-side validation needs to *ex
 which source-text extraction cannot do. See
 [the spec 3 design](2026-08-13-concierge-v2-job-api-design.md) for the full reasoning.
 
-One item is a hard prerequisite rather than a nicety: **`pnpm typecheck` must run in CI**, with
+One item was a hard prerequisite rather than a nicety: **`pnpm typecheck` must run in CI**, with
 its 12 known errors fixed. Spec 3's deliverable is types, so shipping it behind a typecheck
-nobody runs leaves the central promise unverified.
+nobody runs leaves the central promise unverified. **Done** — `ci.yml` now runs `typecheck`,
+`typecheck:public`, `test:types` and `test:lifecycle`.
 
 ## Phase 1 outcome
 
