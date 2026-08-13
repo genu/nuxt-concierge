@@ -1,5 +1,6 @@
 import { Queue, UnrecoverableError, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
+import type { RedisOptions } from 'ioredis'
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
@@ -24,12 +25,18 @@ export const buildConnection = (c: CreateDriverOptions['connection'] = {}): Conn
 }
 
 /**
- * BullMQ's `redisOptions` shape overlaps with, but is not identical to,
- * ioredis's constructor options. The connection we build here only ever
- * carries `url`/`host`/`port`/`password`, all of which are valid for both, so
- * the cast is narrow and safe rather than a blanket `any`.
+ * ioredis's own options type, NOT `ConstructorParameters<typeof Redis>[0]`.
+ * `Redis` has eight constructor overloads and `ConstructorParameters` picks
+ * the LAST one, which takes no arguments — so that alias resolved to `[]`,
+ * index 0 was a TS2493 error, and the alias silently became `undefined`.
+ * Every cast through it therefore became `as undefined`, which is how one bad
+ * type alias produced seven of the twelve pre-existing typecheck errors.
+ *
+ * BullMQ's own `ConnectionOptions` is a union that already includes this type
+ * (`bullmq/dist/esm/interfaces/redis-options.d.ts`), so the same type serves
+ * both the `new Redis(...)` and the `{ connection }` call sites below.
  */
-type RedisConnectionOptions = ConstructorParameters<typeof Redis>[0]
+type RedisConnectionOptions = RedisOptions
 
 /** Mirrors moduleDefaults.bullmq in src/options.ts. */
 const BULLMQ_DEFAULTS: BullmqOptions = { maxStalledCount: 3, stalledInterval: 30_000 }
