@@ -29,7 +29,31 @@ export interface BullmqOptions {
   stalledInterval: number
 }
 
+/**
+ * What a user writes in `nuxt.config.ts`. Every field is optional — and
+ * `worker`/`bullmq` are partial — because `defu` merges whatever is given
+ * here against `moduleDefaults` (see `ResolvedConciergeOptions`) before any
+ * code reads it, so nothing needs to be restated by a consumer. This is the
+ * type `defineNuxtModule` is parameterised with, so it is what the
+ * `concierge` config key is typed as for consumers.
+ */
 export interface ModuleOptions {
+  driver?: DriverName
+  connection?: ConnectionOptions
+  role?: Role
+  worker?: Partial<WorkerOptions>
+  bullmq?: Partial<BullmqOptions>
+  /** BullBoard dashboard. Unchanged in phase 1; replaced in spec 4. */
+  managementUI?: boolean
+}
+
+/**
+ * The fully-merged shape once `defu` has applied `moduleDefaults` on top of
+ * whatever a user wrote. `moduleDefaults` must satisfy this type; code that
+ * reads options after the module has resolved them can rely on every field
+ * being present, unlike `ModuleOptions` above.
+ */
+export interface ResolvedConciergeOptions {
   driver: DriverName
   connection: ConnectionOptions
   role?: Role
@@ -39,7 +63,7 @@ export interface ModuleOptions {
   managementUI?: boolean
 }
 
-export const moduleDefaults: ModuleOptions = {
+export const moduleDefaults: ResolvedConciergeOptions = {
   driver: 'auto',
   connection: { url: process.env.REDIS_URL },
   role: undefined,

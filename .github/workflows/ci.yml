@@ -49,6 +49,11 @@ jobs:
 
       - run: pnpm lint
 
+      # Narrow guard on the public config surface (ModuleOptions), not the
+      # broader `typecheck` script — the repo has pre-existing typecheck
+      # errors elsewhere that are out of scope here.
+      - run: pnpm typecheck:public
+
       - run: pnpm test
 
       - run: pnpm test:lifecycle
