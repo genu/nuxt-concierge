@@ -8,20 +8,49 @@ import { useQueue } from '#concierge'
 const MAX_COUNT = 100
 
 export default defineEventHandler(async (event) => {
-  // `offset` lets the lifecycle harness enqueue two distinguishable batches
-  // (e.g. a short one and a long one) in separate requests without their
-  // `seq` numbers colliding — without it, two calls with `count: 5` each
-  // both produce seq 0..4, and the log's per-jobId de-duplication would
-  // conflate a completion from the first batch with one from the second.
-  const { count: rawCount = 1, durationMs = 200, offset = 0 } = await readBody(event)
+  const {
+    job = 'slow',
+    count: rawCount = 1,
+    offset = 0,
+    // Kept as its own top-level field (rather than folded into `payload`
+    // only) for backward compatibility with the lifecycle harness's own
+    // `enqueue(app, count, durationMs, offset)` helper (test/lifecycle/harness.ts),
+    // which still posts `durationMs` as a top-level body field. Every
+    // currently-passing test/lifecycle/shutdown.test.ts scenario depends on
+    // this reaching the `slow` job unchanged.
+    durationMs,
+    payload = {},
+  } = await readBody(event)
+
   const count = Number.isFinite(rawCount) ? Math.min(Math.max(rawCount, 0), MAX_COUNT) : 1
   const { enqueue } = useQueue()
 
   const ids: string[] = []
+  const errors: string[] = []
+
   for (let i = 0; i < count; i++) {
-    const { id } = await enqueue('slow', { seq: offset + i, durationMs })
-    ids.push(id)
+    try {
+      // Cast: this fixture route enqueues a NAME chosen at runtime, which is
+      // exactly the case the generated literal union exists to prevent. It is
+      // deliberate here and confined to the harness's own entry point — the
+      // typed path is asserted in test/types/enqueue.test-d.ts and by the
+      // playground's own typed call sites.
+      const { id } = await enqueue(
+        job as 'slow',
+        {
+          seq: offset + i,
+          ...(durationMs !== undefined ? { durationMs } : {}),
+          ...payload,
+        } as never,
+      )
+      ids.push(id)
+    }
+    catch (error) {
+      // Surfaced rather than thrown so a producer-side validation rejection
+      // is observable to the test as data instead of a 500.
+      errors.push(error instanceof Error ? error.message : String(error))
+    }
   }
 
-  return { ids }
+  return { ids, errors }
 })
