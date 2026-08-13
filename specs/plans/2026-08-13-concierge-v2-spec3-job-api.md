@@ -1341,9 +1341,24 @@ import {
 } from '../../src/runtime/server/validate'
 import { isPermanentFailure } from '../../src/runtime/server/drivers/bullmq'
 
+// `mode` carries a CUSTOM message that interpolates the received value,
+// deliberately. A plain `z.enum` cannot serve: Zod v4's default enum and
+// literal messages report only the allowed options ("Invalid option: expected
+// one of ...") and never echo the received value, unlike Zod v3. An enum
+// fixture would therefore make the redaction test's exclusion assertion pass
+// even against a `validateOnConsume` that leaks messages verbatim — an
+// assertion that cannot fail, inside the test written to prevent exactly that.
+//
+// Authoring the message here also makes the fixture version-robust: it cannot
+// silently stop echoing the value the way a library default did.
+//
+// Note `mode` always fails, so any test needing a valid payload must use a
+// separate schema rather than a passing value for this one.
 const schema = z.object({
   to: z.string(),
-  mode: z.enum(['fast', 'slow']),
+  mode: z.string().superRefine((val, ctx) => {
+    ctx.addIssue({ code: 'custom', message: `unsupported mode: ${val}` })
+  }),
 })
 
 describe('validateOnEnqueue', () => {
@@ -1365,8 +1380,9 @@ describe('validateOnEnqueue', () => {
 
     expect(error).toBeInstanceOf(JobPayloadInvalidError)
     expect(error.message).toContain('mode')
-    // Zod's enum message embeds the received value. On the PRODUCER side that
-    // is fine and useful: this error returns to whoever supplied the data.
+    // The fixture's custom message embeds the received value. On the PRODUCER
+    // side that is fine and useful: this error returns to whoever supplied the
+    // data, in their own process, and never reaches the queue backend.
     expect(error.message).toContain('sideways')
   })
 
@@ -1547,11 +1563,13 @@ export const validateOnEnqueue = async (
  * The message carries issue PATHS AND A COUNT ONLY, never issue messages.
  * This text becomes BullMQ's `failedReason`, which is persisted in Redis and
  * written to the log stream, and Standard Schema issue messages can embed
- * received values — Zod's enum and literal messages do exactly that
- * (`Invalid enum value. Expected 'a' | 'b', received 'c'`). Job payloads
- * routinely carry user data. Same reasoning as `describeEnvelopeShape` in
- * envelope.ts, which reports an unrecognised value's shape and never its
- * content.
+ * received values — from user-authored messages (a `superRefine` or `error`
+ * callback that interpolates the input) and from other validators' defaults
+ * (ArkType emits "must be a string (was 5)"). This module accepts any
+ * Standard Schema validator, so the message cannot be trusted regardless of
+ * what one library's defaults do this major version. Job payloads routinely
+ * carry user data. Same reasoning as `describeEnvelopeShape` in envelope.ts,
+ * which reports an unrecognised value's shape and never its content.
  *
  * The full issues remain on the error object for in-process inspection.
  */

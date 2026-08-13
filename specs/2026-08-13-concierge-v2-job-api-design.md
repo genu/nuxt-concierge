@@ -369,11 +369,20 @@ failure to a 400 without string-parsing.
 reasoning already written into `describeEnvelopeShape`
 (`src/runtime/server/envelope.ts:38`): a consumer-side failure's message becomes BullMQ's
 `failedReason`, which is persisted in Redis and logged. Standard Schema `Issue` messages can
-embed received values — Zod's enum and literal messages do exactly that
-(`Invalid enum value. Expected 'a' | 'b', received 'c'`). A consumer-side error therefore
-reports **issue paths and a count only, never messages**. The producer-side throw carries full
-messages, because it returns to the caller that just supplied the data, in that caller's own
-process, and never reaches the queue backend.
+embed received values, from two sources: **user-authored messages** (a `superRefine` or an
+`error` callback that interpolates the input), and **other validators' defaults** — ArkType emits
+`must be a string (was 5)`. Since the module accepts any Standard Schema validator, the message
+carried into `failedReason` cannot be trusted regardless of what one library's defaults do this
+major version. A consumer-side error therefore reports **issue paths and a count only, never
+messages**. The producer-side throw carries full messages, because it returns to the caller that
+just supplied the data, in that caller's own process, and never reaches the queue backend.
+
+> An earlier draft justified this with Zod's enum message (`Invalid enum value. Expected 'a' |
+> 'b', received 'c'`). That is **Zod v3** behaviour; v4 reports only the allowed options and does
+> not echo the received value. The requirement is unchanged — the threat was never specific to
+> Zod's defaults — but the example was wrong, and it mattered: a test fixture built on it made the
+> redaction assertion unfalsifiable, since the value it asserted absent was never present to
+> begin with. Found during implementation. The fixture now authors its own value-echoing message.
 
 ### Retry contract
 
@@ -476,7 +485,7 @@ Each of these needs **both halves**; either alone is satisfied by the broken beh
 | ---- | --------- |
 | producer rejection | the error throws **and** `driver.enqueue` was never called |
 | transform-once | the encoded envelope holds the **raw** input **and** `ctx.payload` holds the **output** |
-| redaction | given a `z.enum` schema whose message embeds the received value, the consumer-side message **excludes** that value **and includes** the issue path |
+| redaction | given a schema whose message embeds the received value (author it with `superRefine` — do **not** rely on a validator's defaults, see the note under [Error taxonomy](#error-taxonomy)), the consumer-side message **excludes** that value **and includes** the issue path |
 | permanent classification | `JobPayloadInvalidError` classifies through the existing `isPermanentFailure` **and** bullmq maps it to `UnrecoverableError` |
 | defaults resolution | a per-job value overrides the module default **and** the module default applies when the job omits it |
 | async schema | a `validate` returning a promise is awaited on the producer **and** on the consumer |
