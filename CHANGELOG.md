@@ -38,6 +38,19 @@ concierge: { defaults: { attempts: 1 } }
   app program, where the nitro-scoped declaration was invisible.
 - Fixed all 12 pre-existing `typecheck` errors and added `typecheck` to CI.
 
+## [2.0.0-alpha.1](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha...nuxt-concierge-v2.0.0-alpha.1) (2026-08-13)
+
+
+### 🐛 Bug Fixes
+
+* split ModuleOptions into user-facing and resolved config types ([#18](https://github.com/genu/nuxt-concierge/issues/18)) ([431cf62](https://github.com/genu/nuxt-concierge/commit/431cf620a1b4fda6dfa2672afa40caf130bdd783))
+
+
+### 📖 Documentation
+
+* commit the phase 1 decisions record and specs roadmap ([#17](https://github.com/genu/nuxt-concierge/issues/17)) ([d6893c8](https://github.com/genu/nuxt-concierge/commit/d6893c84eb95c4897c598502c31f78ac8cd04457))
+* correct the prerelease bootstrap note ([#15](https://github.com/genu/nuxt-concierge/issues/15)) ([8560ec9](https://github.com/genu/nuxt-concierge/commit/8560ec93ece74112092cd7c75bfa9859dff87d87))
+
 ## [2.0.0-alpha](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v1.0.60...nuxt-concierge-v2.0.0-alpha) (2026-08-13)
 
 

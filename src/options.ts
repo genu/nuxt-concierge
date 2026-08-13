@@ -38,9 +38,18 @@ export interface JobDefaults {
 }
 
 /**
- * What a user writes in `nuxt.config.ts`. Every field is optional and nested
- * objects are `Partial`, because `resolveModuleOptions` fills the gaps from
- * `moduleDefaults`.
+ * What a user writes in `nuxt.config.ts`. Every field is optional — and
+ * `worker`/`bullmq`/`defaults` are partial — so nothing needs to be restated
+ * by a consumer. This is the type `defineNuxtModule` is parameterised with, so
+ * it is what the `concierge` config key is typed as for consumers.
+ *
+ * `resolveModuleOptions` is what fills the gaps from `moduleDefaults`, and it
+ * is the ONLY thing that does. `defineNuxtModule` is deliberately given no
+ * `defaults` option: `@nuxt/kit` applies those with a deep `defu` before
+ * `setup()` runs, which silently merged a user's `worker.queues` into the
+ * default map instead of replacing it — leaving a `default` queue declared
+ * that the user never asked for, and letting a job that forgot its `queue:`
+ * run there instead of tripping the "targets an undeclared queue" boot error.
  *
  * This used to be the fully-required shape, which meant `worker: { queues }`
  * — the normal case — failed to typecheck with "missing the following
@@ -58,7 +67,11 @@ export interface ModuleOptions {
   managementUI?: boolean
 }
 
-/** What the runtime receives, after defaults are applied. */
+/**
+ * The fully-resolved shape `resolveModuleOptions` returns. `moduleDefaults`
+ * must satisfy this type; code that reads options after the module has resolved
+ * them can rely on every field being present, unlike `ModuleOptions` above.
+ */
 export interface ResolvedConciergeOptions {
   driver: DriverName
   connection: ConnectionOptions
