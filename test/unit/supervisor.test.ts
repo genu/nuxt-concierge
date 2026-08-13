@@ -12,6 +12,7 @@ const baseConfig = {
     heartbeatInterval: 5_000,
     heartbeatTtl: 15_000,
   },
+  defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
   jobs: [{ name: 'work', queue: 'default', handler: async () => {} }],
   version: 'test-1',
   isProduction: false,

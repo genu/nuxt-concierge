@@ -5,20 +5,23 @@ import { createDriver, resolveDriverName } from './drivers'
 import type { ConciergeDriver, Consumer } from './drivers'
 import type { JobDefinition, Role, SupervisorState, WorkerRecord } from './types'
 import { startNoWorkerWatch } from './guardrails'
+import type {
+  BullmqOptions,
+  ConnectionOptions,
+  DriverName,
+  JobDefaults,
+  WorkerOptions,
+} from '../../options'
 
 const logger = consola.create({}).withTag('nuxt-concierge')
 
 export interface SupervisorConfig {
   role: Role
-  driver: 'auto' | 'sync' | 'memory' | 'bullmq'
-  connection: { url?: string, host?: string, port?: number, password?: string }
-  bullmq: { maxStalledCount: number, stalledInterval: number }
-  worker: {
-    queues: Record<string, number>
-    shutdownTimeout: number
-    heartbeatInterval: number
-    heartbeatTtl: number
-  }
+  driver: DriverName
+  connection: ConnectionOptions
+  bullmq: BullmqOptions
+  worker: WorkerOptions
+  defaults: JobDefaults
   jobs: JobDefinition[]
   version: string
   /**

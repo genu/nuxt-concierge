@@ -1,6 +1,17 @@
 export type Role = 'web' | 'worker' | 'both'
 export type SupervisorState = 'starting' | 'running' | 'draining' | 'stopped'
 
+/**
+ * Mirrors BullMQ's `{ type, delay }` shape deliberately, so the bullmq driver
+ * passes it straight through. Any translation layer here is a place for an
+ * off-by-one to hide. `jitter` is not exposed: the memory driver has no
+ * conformance story for it.
+ */
+export interface BackoffOptions {
+  type: 'fixed' | 'exponential'
+  delay: number
+}
+
 export interface ActiveJob {
   jobId: string
   queue: string
