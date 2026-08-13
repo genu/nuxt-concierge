@@ -267,10 +267,13 @@ triggers a publish to npm from CI using trusted publishing (OIDC) with provenanc
 
 Prereleases publish under the `next` dist-tag, so `latest` continues to serve v1.
 
-> **Bootstrapping v2:** seeded at `1.0.60`, release-please derives `1.1.0-alpha.0` from the
-> first `feat:` commit — not `2.0.0-alpha.0`. The first v2 release needs an explicit
-> `Release-As: 2.0.0-alpha.0` commit footer. Check the version in the Release PR before
-> merging it; subsequent increments are automatic.
+> **Note on prerelease versions:** a `feat!:` or `BREAKING CHANGE:` commit gives the major
+> bump on its own — the v2 line was cut as `2.0.0-alpha` straight from the `1.0.60` seed with
+> no manual intervention. A plain `feat:` would only have produced a minor prerelease, so if
+> you ever need to force a specific version, add a `Release-As: <version>` footer to a commit
+> on `master`. Note that GitHub's squash-merge uses only the PR **title**, so a footer placed
+> in the PR body will not reach the commit message. Check the version in the Release PR before
+> merging it either way.
 
 Every commit and pull request also publishes an installable preview build via
 [pkg.pr.new](https://pkg.pr.new):
