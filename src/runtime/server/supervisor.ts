@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { consola } from 'consola'
 import { createDriver, resolveDriverName } from './drivers'
 import type { ConciergeDriver, Consumer } from './drivers'
-import type { JobDefinition, Role, SupervisorState, WorkerRecord } from './types'
+import type { AnyJobDefinition, Role, SupervisorState, WorkerRecord } from './types'
 import { startNoWorkerWatch } from './guardrails'
 import type {
   BullmqOptions,
@@ -22,7 +22,7 @@ export interface SupervisorConfig {
   bullmq: BullmqOptions
   worker: WorkerOptions
   defaults: JobDefaults
-  jobs: JobDefinition[]
+  jobs: AnyJobDefinition[]
   version: string
   /**
    * Resolved at build time by the host module, not read from process.env at
@@ -119,7 +119,10 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
   })
   await driver.init()
 
-  for (const job of config.jobs) driver.registerHandler(job.queue, job.name, job.handler)
+  // `run`, not `handler`: `run` is the driver-facing wrapper that validates
+  // the decoded payload before delegating. Registering `handler` would skip
+  // consumer-side validation entirely.
+  for (const job of config.jobs) driver.registerHandler(job.queue, job.name, job.run)
 
   const routes = new Map(config.jobs.map(j => [j.name, j.queue]))
   const consumers = new Map<string, Consumer>()
