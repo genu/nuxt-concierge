@@ -123,19 +123,39 @@ export function defineJob<Payload = unknown>(
 compile error rather than a silent case where two sources of truth disagree about the payload
 type.
 
-`JobDefinition<In, Out>` needs no phantom fields, because both parameters are recoverable from
-real ones:
+`JobDefinition<In, Out>` carries **two** handler fields and one type-only field:
 
 ```ts
 export interface JobDefinition<In = unknown, Out = In> {
   name: string
   queue: string
-  handler: (ctx: JobContext<Out>) => Promise<void> | void   // carries Out
-  input?: StandardSchemaV1<In, Out>                          // carries In
+  /** As authored. Carries Out. */
+  handler: (ctx: JobContext<Out>) => Promise<void> | void
+  /** Driver-facing: validates, then delegates to `handler`. */
+  run: (ctx: JobContext<unknown>) => Promise<void> | void
+  input?: StandardSchemaV1<In, Out>
   attempts?: number
   backoff?: BackoffOptions
+  /** Type-only. Never assigned, never read. */
+  readonly __payloadTypes?: { input: In, output: Out }
 }
 ```
+
+An earlier draft of this section claimed both parameters were recoverable from real fields and
+that no phantom was needed. That was wrong on two counts, both found while writing the
+implementation plan:
+
+- **The driver-facing handler cannot be `JobHandler<Out>`.** A driver has no payload type
+  information and must be handed a `JobHandler<unknown>`, and `JobHandler<Out>` is not assignable
+  to it — parameter contravariance requires `JobContext<unknown>` to be assignable to
+  `JobContext<Out>`, which is false for every concrete `Out`. Hence `run` alongside `handler`.
+  `run` is also the natural and correct home for consumer-side validation, per
+  [the error taxonomy](#error-taxonomy).
+- **`In` is not reliably inferable without a carrier.** For a job that declares no schema, `In`
+  appears in no member at all, and an interface whose type parameters appear in no member is
+  structurally identical for every instantiation — so extraction silently yields `unknown` for
+  every job while the generated map still looks correct. `__payloadTypes` exists solely to give
+  both parameters a member to be inferred from.
 
 `JobContext` gains a type parameter defaulting to `unknown`, so bare `JobContext` stays valid.
 
