@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   defineNuxtModule,
   useLogger,
@@ -5,11 +6,7 @@ import {
   addServerPlugin,
   addServerHandler,
 } from "@nuxt/kit";
-import pluralize from "pluralize";
-import type { UIConfig } from "@bull-board/api/dist/typings/app";
-import type { RedisOptions } from "bullmq";
 import defu from "defu";
-import { underline, yellow } from "colorette";
 import {
   withTrailingSlash,
   withoutTrailingSlash,
@@ -17,15 +14,13 @@ import {
   joinURL,
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
-import { scanFolder } from "./helplers";
+import { scanJobs } from "./scan";
 import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
+import type { ModuleOptions } from "./options";
+import { moduleDefaults } from "./options";
+import { resolveRole } from "./runtime/server/role";
 
-export interface ModuleOptions {
-  redis: RedisOptions;
-  ui: UIConfig;
-  queues: string[];
-  managementUI?: boolean;
-}
+export type { ModuleOptions } from "./options";
 
 export default defineNuxtModule<ModuleOptions>({
   meta: {
@@ -34,18 +29,7 @@ export default defineNuxtModule<ModuleOptions>({
     version,
     compatibility,
   },
-  defaults: {
-    ui: {
-      boardTitle: "Concierge",
-    },
-    redis: {
-      host: process.env.NUXT_REDIS_HOST,
-      port: Number(process.env.NUXT_REDIS_PORT),
-      password: process.env.NUXT_REDIS_PASSWORD,
-    },
-    queues: [],
-    managementUI: process.env.NODE_ENV === "development",
-  },
+  defaults: moduleDefaults,
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
@@ -61,23 +45,31 @@ export default defineNuxtModule<ModuleOptions>({
       handler: resolve("./runtime/server/routes/ui-handler"),
     });
 
+    addServerHandler({
+      route: "/_concierge/health",
+      handler: resolve("./runtime/server/routes/health"),
+    });
+
+    addServerHandler({
+      middleware: true,
+      handler: resolve("./runtime/server/middleware/role-gate"),
+    });
+
     addServerPlugin(resolve(nuxt.options.buildDir, "0.concierge-nuxt-plugin"));
 
-    const workers = await scanFolder("server/concierge/workers");
-    const queues = await scanFolder("server/concierge/queues");
-    const cronJobs = await scanFolder("server/concierge/cron");
+    const jobs = await scanJobs();
 
-    createTemplateNuxtPlugin(queues, workers, cronJobs, options.queues, name);
+    createTemplateNuxtPlugin(
+      jobs.map((job) => job.file),
+      jobs.map((job) => job.name)
+    );
     createTemplateType();
 
     if (nuxt.options.dev) {
-      logger.success(
-        `Created ${pluralize("queue", queues.length, true)} and ${pluralize(
-          "worker",
-          workers.length,
-          true
-        )}`
-      );
+      const plural = (word: string, count: number) =>
+        `${count} ${word}${count === 1 ? "" : "s"}`;
+
+      logger.success(`Discovered ${plural("job", jobs.length)}`);
     }
 
     // Transpile BullBoard api because its not ESM
@@ -90,16 +82,67 @@ export default defineNuxtModule<ModuleOptions>({
       options
     );
 
+    const role = resolveRole({
+      env: process.env.CONCIERGE_ROLE,
+      config: options.role,
+      isDev: nuxt.options.dev,
+    });
+
+    // Read at build time; the runtime lets CONCIERGE_VERSION override it, because
+    // a git SHA is usually injected into the deployed process, not the build.
+    let packageVersion: string | undefined;
+    try {
+      packageVersion = JSON.parse(
+        readFileSync(`${nuxt.options.rootDir}/package.json`, "utf8")
+      ).version;
+    } catch {
+      packageVersion = undefined;
+    }
+
+    // One signal for "dev", resolved once at build time and reused
+    // everywhere at runtime, rather than two: resolveRole previously read
+    // import.meta.dev while the driver/guardrail path read
+    // process.env.NODE_ENV. Both are statically inlined by nitro's
+    // production bundler, which freezes whichever value was true at BUILD
+    // time into the artifact — reading them at runtime is not just
+    // redundant, it is a lie for anyone who sets NODE_ENV on the deployed
+    // process expecting it to matter. Baking the resolved booleans into
+    // runtimeConfig instead keeps them overridable via the standard
+    // NUXT_CONCIERGE_IS_DEV / NUXT_CONCIERGE_IS_PRODUCTION env vars.
+    const isDev = nuxt.options.dev;
+
+    nuxt.options.runtimeConfig.concierge = defu(
+      { role, version: packageVersion ?? "unknown", isDev, isProduction: !isDev },
+      nuxt.options.runtimeConfig.concierge,
+      options
+    );
+
+    // The preset a user configures explicitly (nuxt.options.nitro.preset) is
+    // not the same thing as the preset nitro actually resolves: serverless
+    // targets (Vercel/Netlify/Cloudflare) are usually auto-detected, so the
+    // user-supplied value is undefined in exactly the case Task 11's
+    // serverless guardrail must catch. nitro.options.preset is only known
+    // once nitro itself has finished resolving it, which is after this
+    // setup() function returns — hence the nitro:init hook rather than
+    // reading it here.
+    nuxt.hook("nitro:init", (nitro) => {
+      const runtimeConfig = nitro.options.runtimeConfig as
+        | { concierge?: Record<string, unknown> }
+        | undefined;
+
+      if (runtimeConfig?.concierge) {
+        runtimeConfig.concierge.preset = nitro.options.preset;
+      }
+    });
+
+    logger.info(`Role: ${role}`);
+
     if (nuxt.options.dev) {
       const viewerUrl = `${cleanDoubleSlashes(
         joinURL(withoutTrailingSlash(nuxt.options.devServer.url), "_concierge")
       )}`;
 
-      logger.info(
-        `Concierge Dashboard: ${underline(
-          yellow(withTrailingSlash(viewerUrl))
-        )}`
-      );
+      logger.info(`Concierge Dashboard: ${withTrailingSlash(viewerUrl)}`);
     }
   },
 });

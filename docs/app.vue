@@ -1,6 +1,4 @@
 <script setup lang="ts">
-const { seo } = useAppConfig();
-
 const { data: navigation } = await useAsyncData("navigation", () =>
   fetchContentNavigation()
 );
@@ -12,11 +10,6 @@ useHead({
     lang: "en",
   },
 });
-
-// useSeoMeta({
-//   ogSiteName: seo?.siteName,
-//   twitterCard: "summary_large_image",
-// });
 
 provide("navigation", navigation);
 </script>
