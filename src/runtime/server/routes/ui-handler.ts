@@ -5,7 +5,8 @@ import { H3Adapter } from '@bull-board/h3'
 import { Queue } from 'bullmq'
 import { resolvePath } from 'mlly'
 import { dirname } from 'pathe'
-import { useNitroApp, useRuntimeConfig } from '#imports'
+import { useRuntimeConfig } from '#imports'
+import { useNitroApp } from 'nitropack/runtime'
 import { getSupervisor } from '#concierge/supervisor'
 
 type ConciergeConfig = ReturnType<typeof useRuntimeConfig>['concierge']

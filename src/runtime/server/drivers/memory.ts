@@ -1,12 +1,11 @@
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
-import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
+import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
 import type { ConciergeDriver, Consumer } from './types'
 
 /** Exported so tests can spy on it instead of asserting on console output. */
 export const logger = consola.create({}).withTag('nuxt-concierge')
 
-const MAX_ATTEMPTS = 3
 const POLL_MS = 10
 
 interface QueuedJob {
@@ -16,6 +15,33 @@ interface QueuedJob {
   envelope: { v: number, payload: string }
   attempt: number
   runAt: number
+  /** TOTAL attempts including the first. `undefined` means one attempt. */
+  attempts?: number
+  backoff?: BackoffOptions
+}
+
+/**
+ * Mirrors BullMQ's built-in strategies exactly
+ * (`bullmq/dist/esm/classes/backoffs.js`): `fixed` returns the delay
+ * unchanged, `exponential` returns `Math.round(2 ** (k - 1) * delay)` for the
+ * k-th retry, so the first retry waits exactly `delay`.
+ *
+ * The index was OBSERVED against real Redis, not read off the source —
+ * `attemptsMade` is mutated across several call sites and a Lua script.
+ * Probed with attempts=4, backoff delay=200: gaps came back ~226/411/824ms,
+ * confirming retry k waits `2 ** (k - 1) * delay` (not `2 ** k`). See the
+ * probe in the spec 3 plan, Task 11 Step 1.
+ *
+ * Exported so the formula is testable without a scheduler, and so the shared
+ * conformance table can assert on it directly.
+ */
+export const backoffDelay = (
+  backoff: BackoffOptions | undefined,
+  retryIndex: number,
+): number => {
+  if (!backoff) return 0
+  if (backoff.type === 'fixed') return backoff.delay
+  return Math.round(2 ** (retryIndex - 1) * backoff.delay)
 }
 
 /**
@@ -61,6 +87,8 @@ export const createMemoryDriver = (): ConciergeDriver => {
         envelope: encodePayload(job.payload),
         attempt: 0,
         runAt: Date.now() + (job.delay ?? 0),
+        attempts: job.attempts,
+        backoff: job.backoff,
       })
       return { id }
     },
@@ -94,21 +122,33 @@ export const createMemoryDriver = (): ConciergeDriver => {
           // `undefined`/primitive) becomes an unhandled rejection that can
           // take the whole process down, with the job neither retried nor
           // logged. Guard the shape before reading the property.
-          const undecodable = typeof error === 'object' && error !== null
+          const permanent = typeof error === 'object' && error !== null
             && (error as { retryable?: boolean }).retryable === false
-          const willRetry = !undecodable && job.attempt < MAX_ATTEMPTS
+
+          // `attempts` is TOTAL attempts including the first, matching
+          // BullMQ. `job.attempt` was already incremented before `run`, so it
+          // is the number of attempts MADE. An absent `attempts` means one
+          // attempt — never a hardcoded ceiling: this used to be
+          // MAX_ATTEMPTS = 3 while bullmq passed nothing and therefore never
+          // retried at all, so a flaky job passed here and dead-lettered on
+          // first failure in production.
+          const totalAttempts = job.attempts ?? 1
+          const willRetry = !permanent && job.attempt < totalAttempts
 
           if (willRetry) {
             logger.warn(
               `[${queue}] job "${job.name}" (${job.id}) failed on attempt ${job.attempt}, retrying`,
               error,
             )
-            queueOf(queue).push({ ...job, runAt: Date.now() })
+            queueOf(queue).push({
+              ...job,
+              runAt: Date.now() + backoffDelay(job.backoff, job.attempt),
+            })
           }
           else {
-            const reason = undecodable
-              ? 'payload could not be decoded'
-              : `failed after ${job.attempt} attempts`
+            const reason = permanent
+              ? 'failed permanently and will not be retried'
+              : `failed after ${job.attempt} attempt(s)`
             logger.error(`[${queue}] job "${job.name}" (${job.id}) ${reason}`, error)
           }
         }

@@ -49,12 +49,32 @@ jobs:
 
       - run: pnpm lint
 
-      # Narrow guard on the public config surface (ModuleOptions), not the
-      # broader `typecheck` script — the repo has pre-existing typecheck
-      # errors elsewhere that are out of scope here.
+      # Gated as of spec 3, whose entire deliverable is types. Twelve errors
+      # accumulated while this was unwired, including one that broke the
+      # library's primary usage (an API route that enqueues and returns JSON).
+      - run: pnpm typecheck
+
+      - run: pnpm test:types
+
+      # Narrow guard on the public config surface: asserts the documented
+      # minimal `concierge` configs are assignable to ModuleOptions, plus two
+      # negative cases the playground's own config does not exercise.
+      #
+      # Retained alongside the broader `typecheck` above even though its
+      # original rationale no longer holds — it existed because 12 pre-existing
+      # typecheck errors made the full script unusable, and those are now fixed.
+      # The negative cases still earn their place: `typecheck` only proves the
+      # playground's one config compiles, not that a wrong one is rejected.
       - run: pnpm typecheck:public
 
       - run: pnpm test
+        env:
+          # The retry conformance table runs its bullmq half only when a real
+          # Redis is reachable (test/unit/retry-conformance.test.ts). Without
+          # this the table silently degrades to memory-only in the one place it
+          # is automated. `pnpm test` stays Redis-free locally, where the
+          # variable is simply unset.
+          REDIS_URL: redis://127.0.0.1:6379
 
       - run: pnpm test:lifecycle
         env:

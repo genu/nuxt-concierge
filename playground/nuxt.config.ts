@@ -44,6 +44,13 @@ export default defineNuxtConfig({
       // each wait 30s+.
       stalledInterval: 30_000,
     },
+    // Explicit rather than inherited so the lifecycle harness's timings are
+    // not coupled to whatever the shipped default happens to be. `failing.ts`
+    // overrides both per-job anyway.
+    defaults: {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 500 },
+    },
   },
   imports: {
     autoImport: false,

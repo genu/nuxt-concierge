@@ -1,4 +1,4 @@
-import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
+import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
 
 export interface DriverCapabilities {
   /** Survives process restart. */
@@ -11,6 +11,30 @@ export interface EnqueueOptions {
   name: string
   payload: unknown
   delay?: number
+  /**
+   * TOTAL attempts including the first, matching BullMQ's own semantics
+   * (`shouldRetryJob` tests `attemptsMade + 1 < opts.attempts`, with
+   * `attemptsMade` at 0 on the first failure). A driver must never translate
+   * between "attempts" and "retries" — that conversion is where an
+   * off-by-one hides, and `memory` and `bullmq` are required to agree
+   * exactly (see test/unit/retry-conformance.test.ts).
+   *
+   * Undefined means "the caller did not resolve a value", not "one attempt".
+   * `useQueue` always resolves it from the job or `concierge.defaults`, so a
+   * driver receiving `undefined` should fall back to its own single-attempt
+   * behaviour rather than inventing a default.
+   *
+   * `sync` ignores this field: it executes inline so errors propagate to the
+   * `enqueue` caller, and retrying would swallow exactly what it exists to
+   * expose.
+   */
+  attempts?: number
+  /**
+   * Delay for the k-th retry is `Math.round(2 ** (k - 1) * delay)` for
+   * `exponential` and `delay` for `fixed`, matching BullMQ's built-in
+   * strategies.
+   */
+  backoff?: BackoffOptions
 }
 
 export interface ConsumeOptions {

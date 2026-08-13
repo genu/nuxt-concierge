@@ -2,7 +2,7 @@
 
 Queues, workers and background jobs for Nuxt, built on BullMQ.
 
-- [✨ &nbsp;Release Notes](/CHANGELOG.md)
+- [✨ &nbsp;Release Notes](CHANGELOG.md)
 
 ## Features
 
@@ -43,35 +43,10 @@ export default defineNuxtConfig({
 
 ## Usage
 
-### Defining a job
-
-`server/jobs/send-email.ts`:
-
-```ts
-import { defineJob } from "#concierge-handlers";
-
-export default defineJob({
-  queue: "mail",
-  handler: async ({ payload }) => {
-    await sendEmail(payload as { to: string });
-  },
-});
-```
-
-The job name defaults to the filename (`send-email`). Its queue must be declared in
-`concierge.worker.queues` — a job targeting an undeclared queue fails the build rather
-than silently never running.
-
-### Enqueuing
-
-```ts
-import { useQueue } from "#concierge";
-
-export default defineEventHandler(async () => {
-  await useQueue().enqueue("send-email", { to: "customer@example.com" });
-  return true;
-});
-```
+Jobs are defined and enqueued as described in [Defining jobs](#defining-jobs) below. The
+job name defaults to the filename (`send-email.ts` → `send-email`; `mail/send.ts` →
+`mail/send`). Its queue must be declared in `concierge.worker.queues` — a job targeting an
+undeclared queue fails the build rather than silently never running.
 
 Payloads are serialised with [devalue](https://github.com/sveltejs/devalue), so `Date`,
 `Map`, `Set` and `undefined` survive the round trip.
@@ -120,6 +95,141 @@ Drivers:
 | `sync`   | no | no | Runs handlers inline. For tests. |
 | `memory` | no | no | Async, in-process, zero dependencies. **Requires `role: 'both'`** — a boot guardrail refuses any other role, because there is no cross-process state for a `web`-only or `worker`-only process to share. Loses every queued job on process exit. |
 | `bullmq` | yes | yes | Backed by Redis. The only driver suitable for production. |
+
+## Defining jobs
+
+Jobs live in `server/jobs/`. The filename is the job name — `server/jobs/mail/send.ts` is `mail/send`.
+
+> **Import everything explicitly in job files.** The generated job map does `typeof import('<job
+> file>')` per job, which pulls every job *module* into the app's TypeScript program — not just
+> Nitro's. A job file relying on a Nitro auto-import (e.g. calling `useRuntimeConfig()` with no
+> import statement) typechecks fine in the nitro graph but fails in the app graph. Import
+> `useRuntimeConfig`, `defineJob`, and anything else your job file uses, the same way the examples
+> below do.
+
+### Typed with an interface
+
+```ts
+// server/jobs/send-email.ts
+import { defineJob } from '#concierge-handlers'
+import { mailer } from '../utils/mailer'   // your own module
+
+export interface SendEmailPayload {
+  to: string
+  subject: string
+}
+
+export default defineJob<SendEmailPayload>({
+  queue: 'default',
+  handler: async (ctx) => {
+    await mailer.send(ctx.payload.to, ctx.payload.subject)
+  },
+})
+```
+
+### Typed and validated with a schema
+
+Any [Standard Schema](https://standardschema.dev) validator works — Zod, Valibot, ArkType. Pass `input` and drop the type argument:
+
+```ts
+import { z } from 'zod'
+import { defineJob } from '#concierge-handlers'
+import { mailer } from '../utils/mailer'   // your own module
+
+export default defineJob({
+  queue: 'default',
+  input: z.object({
+    to: z.string().email(),
+    subject: z.string().default('(no subject)'),
+  }),
+  handler: async (ctx) => {
+    // ctx.payload.subject is a string — the default has been applied
+    await mailer.send(ctx.payload.to, ctx.payload.subject)
+  },
+})
+```
+
+Validation runs on **both** sides. `enqueue` throws immediately if the payload does not match, so a bad payload fails at the call site instead of dead-lettering in a worker minutes later. The worker validates again, because the payload may have been queued by an older deploy — and it is the worker's schema that wins.
+
+If your schema transforms (`.transform()`, `.default()`, coercion), the transform is **applied exactly once, in the worker**. `enqueue` therefore takes the schema's *input* type and `ctx.payload` is its *output* type:
+
+```ts
+input: z.object({ id: z.string().transform(Number) })
+
+await enqueue('archive', { id: '42' })   // string
+// handler: ctx.payload.id                  number
+```
+
+**Your validators must be pure.** *Applied* once is not the same as *called* once: both sides
+call the schema, and the producer throws its result away. A pure validator does not care, which
+is what Zod, Valibot and ArkType give you — but a `superRefine` that writes to a database or
+calls an external service will do so twice, once per side. For the same reason a validator must
+not mutate its input in place: `enqueue` serialises the very object it just handed to the
+schema.
+
+### Enqueueing
+
+```ts
+import { useQueue } from '#concierge'
+
+const { enqueue } = useQueue()
+
+await enqueue('send-email', { to: 'a@b.c', subject: 'hi' })
+await enqueue('send-email', { to: 'a@b.c', subject: 'hi' }, { delay: 5_000 })
+```
+
+In context, inside an API route that enqueues a job and returns a value — the exact shape that
+previously failed `nuxi typecheck` with `Cannot find module '#concierge'` (see the
+[CHANGELOG](CHANGELOG.md)):
+
+```ts
+// server/api/send.post.ts
+import { defineEventHandler, readBody } from 'h3'
+import { useQueue } from '#concierge'
+
+export default defineEventHandler(async (event) => {
+  const { to, subject } = await readBody(event)
+  const { id } = await useQueue().enqueue('send-email', { to, subject })
+  return { queued: id }
+})
+```
+
+Job names autocomplete and payloads are checked at compile time. A typo'd name or a wrong payload shape is a type error, not a runtime surprise.
+
+> **Untyped jobs are not checked.** A job whose default export is not a `JobDefinition` — or
+> one that declares neither a type argument nor an `input` schema (neither of the two shapes
+> above) — resolves to `unknown` in the generated job map, so `enqueue` accepts any payload for
+> that job name with no diagnostic. This is an accepted gap, not a bug: it only affects jobs
+> that opt out of both typing mechanisms, and every other job in the map stays fully checked.
+>
+> A project with no jobs yet has an empty job map, so `enqueue` has no valid name to accept and any call is a type error. Add a file under `server/jobs/` and re-run `nuxi prepare`.
+
+### Retries
+
+```ts
+export default defineJob<Payload>({
+  attempts: 5,                                        // TOTAL attempts, including the first
+  backoff: { type: 'exponential', delay: 1000 },      // 1s, 2s, 4s, 8s
+  handler: async (ctx) => { /* ... */ },
+})
+```
+
+Defaults for every job, set once:
+
+```ts
+// nuxt.config.ts
+concierge: {
+  defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+}
+```
+
+A payload that fails schema validation is **never** retried — it would fail identically every time — so it dead-letters immediately without consuming the remaining retry budget.
+(The execution it fails in still counts as an attempt — validation runs inside the handler
+wrapper, so attempt 1 is spent; attempts 2 and 3 are what get skipped.)
+
+`attempts` must be at least `1`. Nothing validates this: `attempts: 0` is not nullish, so it passes through unvalidated and both drivers run the job exactly once — `0` silently means "once", not "never".
+
+> **Handlers must be idempotent.** Delivery is at-least-once and the default is now three attempts, so a handler that charges a card or sends an email can run more than once for the same job. Make the side effect safe to repeat, or guard it with your own idempotency key.
 
 ## Graceful shutdown and delivery guarantees
 

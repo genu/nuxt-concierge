@@ -1,25 +1,44 @@
 import { hostname } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { consola } from 'consola'
+import type { StandardSchemaV1 } from '@standard-schema/spec'
 import { createDriver, resolveDriverName } from './drivers'
 import type { ConciergeDriver, Consumer } from './drivers'
-import type { JobDefinition, Role, SupervisorState, WorkerRecord } from './types'
+import type { AnyJobDefinition, BackoffOptions, Role, SupervisorState, WorkerRecord } from './types'
 import { startNoWorkerWatch } from './guardrails'
+import type {
+  BullmqOptions,
+  ConnectionOptions,
+  DriverName,
+  JobDefaults,
+  WorkerOptions,
+} from '../../options'
 
 const logger = consola.create({}).withTag('nuxt-concierge')
 
+/**
+ * What the producer needs to know about a job in order to enqueue it.
+ *
+ * Replaces the old `Map<string, string>` name -> queue map: the producer now
+ * also validates (so it needs `input`) and attaches retry options at
+ * `add()` time (so it needs `attempts`/`backoff`), because BullMQ takes both
+ * as job options rather than worker options.
+ */
+export interface RegistryEntry {
+  queue: string
+  input?: StandardSchemaV1
+  attempts?: number
+  backoff?: BackoffOptions
+}
+
 export interface SupervisorConfig {
   role: Role
-  driver: 'auto' | 'sync' | 'memory' | 'bullmq'
-  connection: { url?: string, host?: string, port?: number, password?: string }
-  bullmq: { maxStalledCount: number, stalledInterval: number }
-  worker: {
-    queues: Record<string, number>
-    shutdownTimeout: number
-    heartbeatInterval: number
-    heartbeatTtl: number
-  }
-  jobs: JobDefinition[]
+  driver: DriverName
+  connection: ConnectionOptions
+  bullmq: BullmqOptions
+  worker: WorkerOptions
+  defaults: JobDefaults
+  jobs: AnyJobDefinition[]
   version: string
   /**
    * Resolved at build time by the host module, not read from process.env at
@@ -35,7 +54,7 @@ export interface SupervisorConfig {
 export interface Supervisor {
   readonly id: string
   readonly driver: ConciergeDriver
-  readonly routes: Map<string, string>
+  readonly registry: Map<string, RegistryEntry>
   readonly consumers: Map<string, Consumer>
   readonly config: SupervisorConfig
   getState: () => SupervisorState
@@ -80,7 +99,11 @@ export const resetSupervisor = async (): Promise<void> => {
 
 export const getDriver = () => {
   if (!current) throw new Error('[nuxt-concierge] the supervisor has not started yet')
-  return { driver: current.driver, routes: current.routes }
+  return {
+    driver: current.driver,
+    registry: current.registry,
+    defaults: current.config.defaults,
+  }
 }
 
 export const createSupervisor = async (config: SupervisorConfig): Promise<Supervisor> => {
@@ -116,9 +139,19 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
   })
   await driver.init()
 
-  for (const job of config.jobs) driver.registerHandler(job.queue, job.name, job.handler)
+  // `run`, not `handler`: `run` is the driver-facing wrapper that validates
+  // the decoded payload before delegating. Registering `handler` would skip
+  // consumer-side validation entirely.
+  for (const job of config.jobs) driver.registerHandler(job.queue, job.name, job.run)
 
-  const routes = new Map(config.jobs.map(j => [j.name, j.queue]))
+  const registry = new Map<string, RegistryEntry>(
+    config.jobs.map(job => [job.name, {
+      queue: job.queue,
+      input: job.input,
+      attempts: job.attempts,
+      backoff: job.backoff,
+    }]),
+  )
   const consumers = new Map<string, Consumer>()
   const id = randomUUID().slice(0, 8)
   const startedAt = Date.now()
@@ -136,7 +169,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
   const supervisor: Supervisor = {
     id,
     driver,
-    routes,
+    registry,
     consumers,
     config,
 

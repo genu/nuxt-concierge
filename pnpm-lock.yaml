@@ -11,17 +11,20 @@ importers:
   .:
     dependencies:
       '@bull-board/api':
-        specifier: 5.14.0
-        version: 5.14.0(@bull-board/ui@5.14.0)
+        specifier: 6.14.0
+        version: 6.14.0(@bull-board/ui@6.14.0)
       '@bull-board/h3':
-        specifier: 5.14.0
-        version: 5.14.0
+        specifier: 6.14.0
+        version: 6.14.0
       '@bull-board/ui':
-        specifier: 5.14.0
-        version: 5.14.0
+        specifier: 6.14.0
+        version: 6.14.0
       '@nuxt/kit':
         specifier: 4.5.2
         version: 4.5.2(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))
+      '@standard-schema/spec':
+        specifier: 1.1.0
+        version: 1.1.0
       bullmq:
         specifier: 5.63.0
         version: 5.63.0
@@ -77,6 +80,9 @@ importers:
       vue-tsc:
         specifier: 3.3.9
         version: 3.3.9(typescript@5.9.3)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   docs:
     dependencies:
@@ -88,7 +94,7 @@ importers:
         version: 2.13.4(db0@0.3.4)(ioredis@5.11.1)(magicast@0.5.4)(nuxt@3.10.0(@types/node@24.10.1)(encoding@0.1.13)(eslint@9.39.5(jiti@1.21.7))(lightningcss@1.33.0)(magicast@0.5.4)(optionator@0.9.4)(rolldown@1.2.4)(rollup@4.62.4)(srvx@0.11.22)(terser@5.50.0)(typescript@5.9.3)(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue-tsc@3.3.9(typescript@5.9.3)))(srvx@0.11.22)(vue@3.5.41(typescript@5.9.3))
       '@nuxt/ui-pro':
         specifier: ^0.6.1
-        version: 0.6.1(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(rollup@4.62.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)
+        version: 0.6.1(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(rollup@4.62.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)(zod@4.4.3)
       '@nuxtjs/google-fonts':
         specifier: ^3.1.3
         version: 3.2.0(magicast@0.5.4)
@@ -311,16 +317,16 @@ packages:
       commander:
         optional: true
 
-  '@bull-board/api@5.14.0':
-    resolution: {integrity: sha512-ppN9GeCH8QmCzs47CpDFwVb4Q5W2nK2QvcnbxKpjktCTonZ+5PnoWyXQvLStbcKU9SbMKAM0/OXhj4xOcSRllQ==}
+  '@bull-board/api@6.14.0':
+    resolution: {integrity: sha512-oMDwXwoPn0RsdZ3Y68/bOErZ/qGZE5H97vgE/Pc8Uul/OHajlvajKW4NV+ZGTix82liUfH9CkjYx7PpwvBWhxg==}
     peerDependencies:
-      '@bull-board/ui': 5.14.0
+      '@bull-board/ui': 6.14.0
 
-  '@bull-board/h3@5.14.0':
-    resolution: {integrity: sha512-CXV/F8VAFJNNcAkqQvrcorikWFAGrCtSkmMMWx11wowGkDNRYVscbgFQl3oKZt6r9c8EmwXRVc/QH0/dhcDZWg==}
+  '@bull-board/h3@6.14.0':
+    resolution: {integrity: sha512-sf7N9D3/5TUQPHLe372xcklPoEv1TQzZcyPcON72cJj6AoJOY1dD0fTTHpjs/6107W4wwlGaROz9eYdp3X+4Iw==}
 
-  '@bull-board/ui@5.14.0':
-    resolution: {integrity: sha512-quustWmLsLbqdbCQd4Mud9Eo/2BQzfJSNSiyJt9OrtYT4AXHMgGtbFUy2Ycyda7iQjC4ScKl8f+WdFs4y+KUJA==}
+  '@bull-board/ui@6.14.0':
+    resolution: {integrity: sha512-5yqfS9CwWR8DBxpReIbqv/VSPFM/zT4KZ75keyApMiejasRC2joaHqEzYWlMCjkMycbNNCvlQNlTbl+C3dE/dg==}
 
   '@clack/core@1.4.3':
     resolution: {integrity: sha512-/kr3UWNtdJfxZtPgDqUOmG2pvwlmcLGheex5yiZKdwbzZJxhV+HMNR9QNmyY5cGwTNV6LrR7Jtp+KjhUAP1qBQ==}
@@ -7270,6 +7276,9 @@ packages:
     resolution: {integrity: sha512-zK7YHHz4ZXpW89AHXUPbQVGKI7uvkd3hzusTdotCg1UxyaVtg0zFJSTfW/Dq5f7OBBVnq6cZIaC8Ti4hb6dtCA==}
     engines: {node: '>= 14'}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -7512,21 +7521,21 @@ snapshots:
       cac: 6.7.14
       citty: 0.2.2
 
-  '@bull-board/api@5.14.0(@bull-board/ui@5.14.0)':
+  '@bull-board/api@6.14.0(@bull-board/ui@6.14.0)':
     dependencies:
-      '@bull-board/ui': 5.14.0
+      '@bull-board/ui': 6.14.0
       redis-info: 3.1.0
 
-  '@bull-board/h3@5.14.0':
+  '@bull-board/h3@6.14.0':
     dependencies:
-      '@bull-board/api': 5.14.0(@bull-board/ui@5.14.0)
-      '@bull-board/ui': 5.14.0
+      '@bull-board/api': 6.14.0(@bull-board/ui@6.14.0)
+      '@bull-board/ui': 6.14.0
       ejs: 3.1.10
       h3: 1.15.11
 
-  '@bull-board/ui@5.14.0':
+  '@bull-board/ui@6.14.0':
     dependencies:
-      '@bull-board/api': 5.14.0(@bull-board/ui@5.14.0)
+      '@bull-board/api': 6.14.0(@bull-board/ui@6.14.0)
 
   '@clack/core@1.4.3':
     dependencies:
@@ -8850,10 +8859,10 @@ snapshots:
       - vite
       - webpack
 
-  '@nuxt/ui-pro@0.6.1(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(rollup@4.62.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)':
+  '@nuxt/ui-pro@0.6.1(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(rollup@4.62.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)(zod@4.4.3)':
     dependencies:
       '@nuxt/kit': 3.10.0(magicast@0.5.4)(rollup@4.62.4)
-      '@nuxt/ui': 2.22.3(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)
+      '@nuxt/ui': 2.22.3(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)(zod@4.4.3)
       '@vueuse/core': 10.11.1(vue@3.5.41(typescript@5.9.3))
       defu: 6.1.7
       ofetch: 1.5.1
@@ -8891,7 +8900,7 @@ snapshots:
 
   '@nuxt/ui-templates@1.3.4': {}
 
-  '@nuxt/ui@2.22.3(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)':
+  '@nuxt/ui@2.22.3(change-case@5.4.4)(magic-string@1.1.1)(magicast@0.5.4)(rolldown@1.2.4)(unplugin@3.3.0(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@24.10.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@5.0.12(@types/node@24.10.1)(lightningcss@1.33.0)(terser@5.50.0))(vue@3.5.41(typescript@5.9.3))(yaml@2.9.0)(zod@4.4.3)':
     dependencies:
       '@headlessui/tailwindcss': 0.2.2(tailwindcss@3.4.19(yaml@2.9.0))
       '@headlessui/vue': 1.7.23(vue@3.5.41(typescript@5.9.3))
@@ -8916,6 +8925,8 @@ snapshots:
       scule: 1.3.0
       tailwind-merge: 2.6.1
       tailwindcss: 3.4.19(yaml@2.9.0)
+    optionalDependencies:
+      zod: 4.4.3
     transitivePeerDependencies:
       - async-validator
       - axios
@@ -16039,5 +16050,7 @@ snapshots:
       archiver-utils: 5.0.2
       compress-commons: 6.0.2
       readable-stream: 4.7.0
+
+  zod@4.4.3: {}
 
   zwitch@2.0.4: {}

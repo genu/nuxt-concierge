@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createSupervisor, resetSupervisor, getDriver } from '../../src/runtime/server/supervisor'
 
+const workHandler = async () => {}
+
 const baseConfig = {
   role: 'both' as const,
   driver: 'memory' as const,
@@ -12,7 +14,8 @@ const baseConfig = {
     heartbeatInterval: 5_000,
     heartbeatTtl: 15_000,
   },
-  jobs: [{ name: 'work', queue: 'default', handler: async () => {} }],
+  defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+  jobs: [{ name: 'work', queue: 'default', handler: workHandler, run: workHandler }],
   version: 'test-1',
   isProduction: false,
 }
@@ -37,13 +40,14 @@ describe('supervisor', () => {
   })
 
   it('starts one consumer per configured queue under role: worker', async () => {
+    const sendHandler = async () => {}
     const s = await createSupervisor({
       ...baseConfig,
       role: 'worker',
       worker: { ...baseConfig.worker, queues: { default: 1, mail: 1 } },
       jobs: [
-        { name: 'work', queue: 'default', handler: async () => {} },
-        { name: 'send', queue: 'mail', handler: async () => {} },
+        { name: 'work', queue: 'default', handler: workHandler, run: workHandler },
+        { name: 'send', queue: 'mail', handler: sendHandler, run: sendHandler },
       ],
     })
     await s.startConsumers()
@@ -64,13 +68,13 @@ describe('supervisor', () => {
   it('throws when a job names a queue absent from the concurrency map', async () => {
     await expect(createSupervisor({
       ...baseConfig,
-      jobs: [{ name: 'orphan', queue: 'nope', handler: async () => {} }],
+      jobs: [{ name: 'orphan', queue: 'nope', handler: workHandler, run: workHandler }],
     })).rejects.toThrow(/"nope".*worker\.queues/)
   })
 
-  it('builds a route map from name to queue', async () => {
+  it('builds a registry from name to queue', async () => {
     const s = await createSupervisor(baseConfig)
-    expect(s.routes.get('work')).toBe('default')
+    expect(s.registry.get('work')?.queue).toBe('default')
     await s.stop()
   })
 
@@ -92,9 +96,10 @@ describe('supervisor', () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
 
+    const gatedHandler = async () => { await gate }
     const s = await createSupervisor({
       ...baseConfig,
-      jobs: [{ name: 'work', queue: 'default', handler: async () => { await gate } }],
+      jobs: [{ name: 'work', queue: 'default', handler: gatedHandler, run: gatedHandler }],
     })
     await s.startConsumers()
 
@@ -201,12 +206,43 @@ describe('supervisor', () => {
     await s.stop()
   })
 
-  it('getDriver() returns the live driver and route map', async () => {
+  it('getDriver() returns the live driver, registry and defaults', async () => {
     const s = await createSupervisor(baseConfig)
 
-    const { driver, routes } = getDriver()
+    const { driver, registry, defaults } = getDriver()
     expect(driver).toBe(s.driver)
-    expect(routes).toBe(s.routes)
+    expect(registry).toBe(s.registry)
+    expect(defaults).toBe(s.config.defaults)
+
+    await s.stop()
+  })
+
+  it('registers each job\'s run wrapper, not its raw handler', async () => {
+    // `handler` and `run` are deliberately DIFFERENT functions here — every
+    // other fixture in this file passes the same function reference as both,
+    // which makes registering either observationally identical and would let
+    // a regression to `job.handler` in supervisor.ts pass silently.
+    const called: string[] = []
+    const job = {
+      name: 'j',
+      queue: 'default',
+      handler: () => { called.push('handler') },
+      run: () => { called.push('run') },
+    }
+
+    const s = await createSupervisor({ ...baseConfig, jobs: [job] })
+    await s.startConsumers()
+
+    await s.driver.enqueue('default', { name: 'j', payload: undefined })
+    // Poll until the memory driver's claim loop (10ms) has run the job.
+    const deadline = Date.now() + 2000
+    while (called.length === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+
+    // Both halves matter: `run` ran AND `handler` did not. Asserting only the
+    // first would pass if the supervisor registered both.
+    expect(called).toEqual(['run'])
 
     await s.stop()
   })

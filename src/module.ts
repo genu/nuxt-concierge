@@ -15,9 +15,13 @@ import {
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { scanJobs } from "./scan";
-import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
+import {
+  createTemplateNuxtPlugin,
+  createTemplateType,
+  createTemplateInternalTypes,
+} from "./templates";
 import type { ModuleOptions } from "./options";
-import { moduleDefaults } from "./options";
+import { resolveModuleOptions } from "./options";
 import { resolveRole } from "./runtime/server/role";
 
 export type { ModuleOptions } from "./options";
@@ -29,7 +33,14 @@ export default defineNuxtModule<ModuleOptions>({
     version,
     compatibility,
   },
-  defaults: moduleDefaults,
+  // Deliberately NOT `defaults: moduleDefaults`. @nuxt/kit runs
+  // `defu(inlineOptions, nuxtConfigOptions, optionsDefaults)` before setup()
+  // executes, and defu deep-merges — so a `defaults` option here would merge
+  // the user's `worker.queues` map with moduleDefaults.worker.queues before
+  // `resolveModuleOptions` below ever sees it, silently reintroducing the
+  // `default` queue underneath any replacement queue map the user declared.
+  // `resolveModuleOptions` is the single resolution point and already fills
+  // every field from `moduleDefaults` itself.
   async setup(options, nuxt) {
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
@@ -63,7 +74,8 @@ export default defineNuxtModule<ModuleOptions>({
       jobs.map((job) => job.file),
       jobs.map((job) => job.name)
     );
-    createTemplateType();
+    createTemplateType(jobs);
+    createTemplateInternalTypes();
 
     if (nuxt.options.dev) {
       const plural = (word: string, count: number) =>
@@ -77,14 +89,16 @@ export default defineNuxtModule<ModuleOptions>({
     nuxt.options.build.transpile.push("@bull-board/h3");
     nuxt.options.build.transpile.push("@bull-board/ui");
 
+    const resolved = resolveModuleOptions(options);
+
     nuxt.options.runtimeConfig.concierge = defu(
       nuxt.options.runtimeConfig.concierge,
-      options
+      resolved
     );
 
     const role = resolveRole({
       env: process.env.CONCIERGE_ROLE,
-      config: options.role,
+      config: resolved.role,
       isDev: nuxt.options.dev,
     });
 
@@ -114,7 +128,7 @@ export default defineNuxtModule<ModuleOptions>({
     nuxt.options.runtimeConfig.concierge = defu(
       { role, version: packageVersion ?? "unknown", isDev, isProduction: !isDev },
       nuxt.options.runtimeConfig.concierge,
-      options
+      resolved
     );
 
     // The preset a user configures explicitly (nuxt.options.nitro.preset) is

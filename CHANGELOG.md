@@ -1,5 +1,69 @@
 # Changelog
 
+## Unreleased
+
+### ⚠️ Behaviour change: jobs are now retried by default
+
+A failed job is now **attempted 3 times in total** — the initial run plus two retries — with
+exponential backoff between them (1s, then 2s). Previously the `bullmq` driver passed no
+`attempts` at all, so BullMQ's default of `0` applied and its retry condition
+(`attemptsMade + 1 < attempts`) was never true: **a failing job was never retried in
+production**, while the `memory` driver used in dev and CI retried it three times. The two
+now agree.
+
+**A non-idempotent handler that previously failed once and stopped will now run its side effects
+up to three times.** If you have handlers that charge cards, send email, or post to an external
+API, make them idempotent or set `attempts: 1` on those jobs before upgrading.
+
+Opt out globally:
+
+```ts
+concierge: { defaults: { attempts: 1 } }
+```
+
+### ⚠️ Behaviour change: `worker.queues` replaces the defaults instead of merging
+
+`concierge.worker.queues` is now exactly the map you write. Previously `@nuxt/kit` deep-merged
+it against the module defaults before the module ever saw it, so a `default: 5` entry was
+silently added to every config.
+
+**This can stop an app booting.** `defineJob` defaults a job's queue to `default`, so if your
+config declares only other queues:
+
+```ts
+concierge: { worker: { queues: { mail: 2 } } }
+```
+
+then any job that does not set `queue:` explicitly now fails at boot with:
+
+```
+[nuxt-concierge] job "send-email" targets queue "default", which is not declared in
+concierge.worker.queues (declared: mail).
+```
+
+That error is the point — it is the guardrail that stops a job silently never running — but it
+was unreachable while the merge was quietly re-adding `default`. Either declare `default` in
+your map, or set `queue:` on every job.
+
+The old behaviour also meant a consumer, a Redis connection and a no-worker watch were started
+for a `default` queue nobody asked for.
+
+### 🚀 Features
+
+- `defineJob<Payload>` types `ctx.payload`, and `useQueue().enqueue` is generic over a generated
+  job map — job names autocomplete, and a wrong payload is a compile error.
+- `input` accepts any Standard Schema validator (Zod, Valibot, ArkType) and is validated on both
+  enqueue and execute. A validation failure is permanent and never retried.
+- Per-job `attempts` and `backoff`, with `concierge.defaults` for the fleet.
+- `ModuleOptions` now accepts partial nested config: `worker: { queues }` no longer fails to
+  typecheck for missing `heartbeatInterval`/`heartbeatTtl`.
+
+### 🐛 Bug Fixes
+
+- Any API route that enqueued a job and returned a value failed `nuxi typecheck` with
+  `Cannot find module '#concierge'`. Nitro's generated route types pull server handlers into the
+  app program, where the nitro-scoped declaration was invisible.
+- Fixed all 12 pre-existing `typecheck` errors and added `typecheck` to CI.
 
 ## [2.0.0-alpha.1](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha...nuxt-concierge-v2.0.0-alpha.1) (2026-08-13)
 

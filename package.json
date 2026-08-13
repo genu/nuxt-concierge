@@ -40,7 +40,8 @@
     "typecheck:public": "tsc --noEmit -p test/types/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest watch",
-    "test:lifecycle": "vitest run --config vitest.lifecycle.config.ts"
+    "test:lifecycle": "vitest run --config vitest.lifecycle.config.ts",
+    "test:types": "vitest run --config vitest.types.config.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -57,10 +58,11 @@
     }
   },
   "dependencies": {
-    "@bull-board/api": "5.14.0",
-    "@bull-board/h3": "5.14.0",
-    "@bull-board/ui": "5.14.0",
+    "@bull-board/api": "6.14.0",
+    "@bull-board/h3": "6.14.0",
+    "@bull-board/ui": "6.14.0",
     "@nuxt/kit": "4.5.2",
+    "@standard-schema/spec": "1.1.0",
     "bullmq": "5.63.0",
     "consola": "3.4.2",
     "defu": "6.1.7",
@@ -80,6 +82,7 @@
     "nuxt": "4.5.2",
     "typescript": "5.9.3",
     "vitest": "4.1.10",
-    "vue-tsc": "3.3.9"
+    "vue-tsc": "3.3.9",
+    "zod": "4.4.3"
   }
 }
