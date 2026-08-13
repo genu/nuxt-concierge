@@ -62,7 +62,22 @@ export interface ModuleOptions {
   role?: Role
   worker?: Partial<WorkerOptions>
   bullmq?: Partial<BullmqOptions>
-  defaults?: Partial<JobDefaults>
+  /**
+   * Partial at BOTH levels, deliberately. `Partial<JobDefaults>` alone makes
+   * `backoff` optional while still demanding both of its members, so a valid
+   * `defaults: { backoff: { type: 'fixed' } }` fails to typecheck with
+   * "Property 'delay' is missing" — even though `resolveModuleOptions` fills
+   * `delay` from `moduleDefaults` perfectly well, because `defu` merges
+   * nested objects.
+   *
+   * That is the same defect `worker?: Partial<WorkerOptions>` exists to fix,
+   * one level deeper: a type demanding a value the resolver already supplies.
+   */
+  defaults?: {
+    /** TOTAL attempts including the first. Must be at least 1. */
+    attempts?: number
+    backoff?: Partial<BackoffOptions>
+  }
   /** BullBoard dashboard. Unchanged in phase 1; replaced in spec 4. */
   managementUI?: boolean
 }

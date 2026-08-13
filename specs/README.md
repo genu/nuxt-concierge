@@ -6,7 +6,7 @@ This file is the index and the current state.
 | # | Spec | State | Document |
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
-| 3 | **Job API & typed enqueue** | Designed — **plan not yet written** | [design](2026-08-13-concierge-v2-job-api-design.md) |
+| 3 | **Job API & typed enqueue** | **Implemented** — PR #19 | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) |
 | 4 | **Dashboard** | Not written | — |
 | 5 | Cron & dedup | Not written — split out of spec 3 | — |
 | 2 | Driver introspection SPI | Not written — **fold into spec 4** | — |

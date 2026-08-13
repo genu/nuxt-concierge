@@ -56,7 +56,7 @@ time. It is not pending work.
 | Payload declaration | `defineJob<Payload>` type argument, or inferred from `input` | Two overloads. A named interface plus an explicit type argument is the established convention in this codebase. |
 | Schema library | Any Standard Schema v1 validator | Types-only dependency, zero runtime. Zod, Valibot and ArkType all implement it, and it is already how `UForm` and h3's validated-body helpers accept schemas. |
 | Producer bundle | Eager static imports retained | The lean-bundle problem is a bundling concern, not a job-API concern. See [below](#why-there-is-no-ast-extraction). |
-| What gets enqueued | The **raw** input; the consumer's validated output is what reaches the handler | The transform runs exactly once, in the process whose schema is authoritative. |
+| What gets enqueued | The **raw** input; the consumer's validated output is what reaches the handler | The transform is *applied* exactly once, in the process whose schema is authoritative. Both sides still *call* `validate`; see [Validation data flow](#validation-data-flow). |
 | Validation failure | Permanent, never retried | A payload this build cannot accept fails identically on every attempt. Same treatment `UnsupportedEnvelopeError` already gets. |
 | `attempts` semantics | Total attempts, including the first | Matches BullMQ, so pass-through needs no arithmetic. |
 | Default retries | `3`, exponential, `1000ms` | A background-job library whose default is no retries has the wrong default. This is a **behaviour change**; see [Breaking changes](#breaking-changes). |
@@ -190,13 +190,18 @@ An empty, augmentable interface ships in the module's own types:
 export interface ConciergeJobMap {}
 ```
 
-A generated, nitro-scoped type template fills it from the scan:
+A generated type template fills it from the scan, emitted into **both** the nitro and app
+graphs:
 
 ```ts
-declare module 'nuxt-concierge/jobs' {
+declare module '#concierge' {
   interface ConciergeJobMap {
-    'send-email': typeof import('/abs/path/server/jobs/send-email')['default']
-    'mail/send': typeof import('/abs/path/server/jobs/mail/send')['default']
+    'send-email': import('<abs>/runtime/server/types').EnqueueInputOf<
+      typeof import('/abs/path/server/jobs/send-email')['default']
+    >
+    'mail/send': import('<abs>/runtime/server/types').EnqueueInputOf<
+      typeof import('/abs/path/server/jobs/mail/send')['default']
+    >
   }
 }
 ```
@@ -206,12 +211,31 @@ declare module 'nuxt-concierge/jobs' {
 ```ts
 enqueue<K extends keyof ConciergeJobMap>(
   name: K,
-  payload: EnqueueInputOf<ConciergeJobMap[K]>,
+  payload: ConciergeJobMap[K],
   opts?: EnqueueJobOptions,
 ): Promise<{ id: string }>
 ```
 
-where:
+Three details here differ from this section's first draft, each corrected by implementation:
+
+- **The specifier is `#concierge`, not a package subpath.** Ambient `declare module` blocks with
+  matching specifiers merge, which is the entire mechanism — the empty `ConciergeJobMap` declared
+  alongside `useQueue` and the filled one above become one interface. Augmenting any other
+  specifier creates a second, unrelated interface that `useQueue` never sees, and every `enqueue`
+  silently falls back to the empty one with no error anywhere.
+- **`EnqueueInputOf` is applied at generation time, not at the call site.** `TypedQueue<Map>` types
+  its payload as `Map[K]` directly, so the map must hold payload types rather than job definitions.
+  Emitting the bare definition made a *correct* call fail with TS2353. The module qualification on
+  `EnqueueInputOf` is load-bearing and easy to lose: an unresolvable name inside a generated
+  `.d.ts` is swallowed by `skipLibCheck`, leaving `Map[K]` an error type and every payload
+  effectively `any`.
+- **It is emitted into both graphs, not nitro-only.** Nitro's generated `nitro-routes.d.ts`
+  references every server route handler to type `$fetch`, which pulls them into the app program —
+  so a route importing `#concierge` fails there without an app-graph copy. The same applies to
+  `#concierge-handlers`, because this map's own `typeof import(<job file>)` drags job modules into
+  the app program too.
+
+`EnqueueInputOf` itself:
 
 ```ts
 type EnqueueInputOf<T> = T extends JobDefinition<infer In, infer _Out> ? In : unknown
@@ -297,7 +321,7 @@ which jobs import eagerly — a diagnostic cannot silently misread the way an an
 
 ### Validation data flow
 
-```
+```text
 enqueue('send-email', raw)
   │
   ├─ registry lookup ──── no such job ──────────→ throw (runtime backstop)
@@ -325,6 +349,18 @@ Standard Schema's `validate` may return a promise, so both sites `await` it.
 handler.** Producer-side validation is a pure check whose result is discarded — it exists only
 to throw early. Each side therefore has exactly one job: **the producer fails fast, the consumer
 is the authority.**
+
+**What "exactly once" does and does not mean.** The transform is *applied to the payload* once:
+the raw input is what gets serialized, and only the consumer's output reaches the handler, so a
+value is never transformed twice. But **both sides call `~standard.validate`**, so a transform or
+refinement *function* executes twice — once on the producer, whose result is thrown away.
+
+That is harmless for a pure validator, which is what Zod, Valibot and ArkType give you. It is not
+harmless for one with side effects: a `superRefine` that writes to a database, increments a
+counter, or calls an external service will do so on both the producer and the consumer. **Schema
+validators must be pure.** `validateOnEnqueue`'s doc comment says the same thing for the
+neighbouring reason — a validator that mutates its input in place would half-transform what gets
+serialized.
 
 The alternative — enqueueing the transformed output and validating again — is a bug that only
 appears in production. Given `input: z.object({ id: z.string().transform(Number) })`, a producer
@@ -553,9 +589,10 @@ prominently — because first-class dedup keys are deferred, not in this spec.
 
 - `@standard-schema/spec`, pinned, in `dependencies` (types-only, zero runtime)
 - `zod`, pinned, in `devDependencies` for tests and the playground
-- `playground/server/jobs/slow.ts` declares a payload interface, which incidentally types the two
-  casts the lifecycle harness relies on (`payload as { durationMs?: number }`,
-  `payload as { seq: number }`)
+- `playground/server/jobs/slow.ts` declares a `SlowPayload` interface and reads `payload.seq` /
+  `payload.durationMs` directly. The two casts it used to carry
+  (`payload as { durationMs?: number }`, `payload as { seq: number }`) are gone — typing the job
+  removed the need for them, which is the smallest visible sign the feature works
 - README's API section is updated. The docs site is rewritten in spec 4, so changes stay in
   README.
 

@@ -30,4 +30,29 @@ describe('resolveModuleOptions', () => {
   it('returns the defaults verbatim for empty input', () => {
     expect(resolveModuleOptions({})).toEqual(moduleDefaults)
   })
+
+  it('fills backoff.delay when the user overrides only the type', () => {
+    // `defaults.backoff` is partial at BOTH levels. Before that, this object
+    // failed to typecheck with "Property 'delay' is missing" even though the
+    // resolver fills it — so the assertion below is as much about the type
+    // compiling as about the value.
+    const resolved = resolveModuleOptions({ defaults: { backoff: { type: 'fixed' } } })
+
+    expect(resolved.defaults.backoff.type).toBe('fixed')
+    expect(resolved.defaults.backoff.delay).toBe(moduleDefaults.defaults.backoff.delay)
+  })
+
+  it('fills backoff.type when the user overrides only the delay', () => {
+    const resolved = resolveModuleOptions({ defaults: { backoff: { delay: 250 } } })
+
+    expect(resolved.defaults.backoff.delay).toBe(250)
+    expect(resolved.defaults.backoff.type).toBe(moduleDefaults.defaults.backoff.type)
+  })
+
+  it('fills backoff wholesale when the user overrides only attempts', () => {
+    const resolved = resolveModuleOptions({ defaults: { attempts: 7 } })
+
+    expect(resolved.defaults.attempts).toBe(7)
+    expect(resolved.defaults.backoff).toEqual(moduleDefaults.defaults.backoff)
+  })
 })

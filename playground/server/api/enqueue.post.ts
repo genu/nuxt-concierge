@@ -22,7 +22,11 @@ export default defineEventHandler(async (event) => {
     payload = {},
   } = await readBody(event)
 
-  const count = Number.isFinite(rawCount) ? Math.min(Math.max(rawCount, 0), MAX_COUNT) : 1
+  // Truncated as well as clamped: a fractional 0.5 passes the finite and range
+  // checks, then the loop still runs once, so `count` would not mean what it says.
+  const count = Number.isFinite(rawCount)
+    ? Math.min(Math.max(Math.trunc(rawCount), 0), MAX_COUNT)
+    : 1
   const { enqueue } = useQueue()
 
   const ids: string[] = []

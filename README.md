@@ -2,7 +2,7 @@
 
 Queues, workers and background jobs for Nuxt, built on BullMQ.
 
-- [✨ &nbsp;Release Notes](/CHANGELOG.md)
+- [✨ &nbsp;Release Notes](CHANGELOG.md)
 
 ## Features
 
@@ -112,6 +112,7 @@ Jobs live in `server/jobs/`. The filename is the job name — `server/jobs/mail/
 ```ts
 // server/jobs/send-email.ts
 import { defineJob } from '#concierge-handlers'
+import { mailer } from '../utils/mailer'   // your own module
 
 export interface SendEmailPayload {
   to: string
@@ -133,6 +134,7 @@ Any [Standard Schema](https://standardschema.dev) validator works — Zod, Valib
 ```ts
 import { z } from 'zod'
 import { defineJob } from '#concierge-handlers'
+import { mailer } from '../utils/mailer'   // your own module
 
 export default defineJob({
   queue: 'default',
@@ -149,7 +151,7 @@ export default defineJob({
 
 Validation runs on **both** sides. `enqueue` throws immediately if the payload does not match, so a bad payload fails at the call site instead of dead-lettering in a worker minutes later. The worker validates again, because the payload may have been queued by an older deploy — and it is the worker's schema that wins.
 
-If your schema transforms (`.transform()`, `.default()`, coercion), the transform runs **exactly once, in the worker**. `enqueue` therefore takes the schema's *input* type and `ctx.payload` is its *output* type:
+If your schema transforms (`.transform()`, `.default()`, coercion), the transform is **applied exactly once, in the worker**. `enqueue` therefore takes the schema's *input* type and `ctx.payload` is its *output* type:
 
 ```ts
 input: z.object({ id: z.string().transform(Number) })
@@ -157,6 +159,13 @@ input: z.object({ id: z.string().transform(Number) })
 await enqueue('archive', { id: '42' })   // string
 // handler: ctx.payload.id                  number
 ```
+
+**Your validators must be pure.** *Applied* once is not the same as *called* once: both sides
+call the schema, and the producer throws its result away. A pure validator does not care, which
+is what Zod, Valibot and ArkType give you — but a `superRefine` that writes to a database or
+calls an external service will do so twice, once per side. For the same reason a validator must
+not mutate its input in place: `enqueue` serialises the very object it just handed to the
+schema.
 
 ### Enqueueing
 
@@ -171,7 +180,7 @@ await enqueue('send-email', { to: 'a@b.c', subject: 'hi' }, { delay: 5_000 })
 
 In context, inside an API route that enqueues a job and returns a value — the exact shape that
 previously failed `nuxi typecheck` with `Cannot find module '#concierge'` (see the
-[CHANGELOG](/CHANGELOG.md)):
+[CHANGELOG](CHANGELOG.md)):
 
 ```ts
 // server/api/send.post.ts
@@ -192,7 +201,7 @@ Job names autocomplete and payloads are checked at compile time. A typo'd name o
 > above) — resolves to `unknown` in the generated job map, so `enqueue` accepts any payload for
 > that job name with no diagnostic. This is an accepted gap, not a bug: it only affects jobs
 > that opt out of both typing mechanisms, and every other job in the map stays fully checked.
-
+>
 > A project with no jobs yet has an empty job map, so `enqueue` has no valid name to accept and any call is a type error. Add a file under `server/jobs/` and re-run `nuxi prepare`.
 
 ### Retries
@@ -214,7 +223,9 @@ concierge: {
 }
 ```
 
-A payload that fails schema validation is **never** retried — it would fail identically every time — so it dead-letters immediately without consuming the attempt budget.
+A payload that fails schema validation is **never** retried — it would fail identically every time — so it dead-letters immediately without consuming the remaining retry budget.
+(The execution it fails in still counts as an attempt — validation runs inside the handler
+wrapper, so attempt 1 is spent; attempts 2 and 3 are what get skipped.)
 
 `attempts` must be at least `1`. Nothing validates this: `attempts: 0` is not nullish, so it passes through unvalidated and both drivers run the job exactly once — `0` silently means "once", not "never".
 
