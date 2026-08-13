@@ -1,6 +1,6 @@
 {
   "name": "nuxt-concierge",
-  "version": "2.0.0-alpha",
+  "version": "2.0.0-alpha.1",
   "description": "Background jobs, queues and workers for Nuxt",
   "repository": "https://github.com/genu/nuxt-concierge",
   "license": "MIT",
