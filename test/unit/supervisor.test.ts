@@ -72,9 +72,9 @@ describe('supervisor', () => {
     })).rejects.toThrow(/"nope".*worker\.queues/)
   })
 
-  it('builds a route map from name to queue', async () => {
+  it('builds a registry from name to queue', async () => {
     const s = await createSupervisor(baseConfig)
-    expect(s.routes.get('work')).toBe('default')
+    expect(s.registry.get('work')?.queue).toBe('default')
     await s.stop()
   })
 
@@ -206,12 +206,12 @@ describe('supervisor', () => {
     await s.stop()
   })
 
-  it('getDriver() returns the live driver and route map', async () => {
+  it('getDriver() returns the live driver and registry', async () => {
     const s = await createSupervisor(baseConfig)
 
-    const { driver, routes } = getDriver()
+    const { driver, registry } = getDriver()
     expect(driver).toBe(s.driver)
-    expect(routes).toBe(s.routes)
+    expect(registry).toBe(s.registry)
 
     await s.stop()
   })

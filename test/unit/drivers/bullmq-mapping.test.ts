@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { UnrecoverableError } from 'bullmq'
+import { Queue, UnrecoverableError } from 'bullmq'
 import {
   buildConnection,
   createBullmqDriver,
@@ -35,6 +35,9 @@ vi.mock('bullmq', () => {
   }
   class Queue {
     close = vi.fn(async () => {})
+    // A real prototype method (not a class field) so `vi.spyOn(Queue.prototype,
+    // 'add')` in the retry-options test below has something to replace.
+    async add() { return { id: '1' } }
   }
   return { Worker, Queue, UnrecoverableError }
 })
@@ -157,5 +160,44 @@ describe('consume() job processor', () => {
     expect(rejection).not.toBeInstanceOf(UnrecoverableError)
     expect((rejection as Error).message).toBe('transient failure')
     expect(handler).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('bullmq enqueue retry options', () => {
+  it('passes attempts and backoff to queue.add', async () => {
+    const add = vi.fn().mockResolvedValue({ id: '1' })
+    const driver = createBullmqDriver({ connection: { url: 'redis://localhost:6379' } })
+    // Replace the lazily-created Queue with a stub. Asserting on the real
+    // BullMQ call arguments is what makes this test about the mapping rather
+    // than about Redis.
+    vi.spyOn(Queue.prototype, 'add').mockImplementation(add)
+
+    await driver.enqueue('default', {
+      name: 'j',
+      payload: { a: 1 },
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 250 },
+    })
+
+    expect(add).toHaveBeenCalledWith(
+      'j',
+      expect.anything(),
+      expect.objectContaining({ attempts: 5, backoff: { type: 'exponential', delay: 250 } }),
+    )
+  })
+
+  it('omits attempts entirely when not supplied rather than sending 0', async () => {
+    const add = vi.fn().mockResolvedValue({ id: '1' })
+    const driver = createBullmqDriver({ connection: { url: 'redis://localhost:6379' } })
+    vi.spyOn(Queue.prototype, 'add').mockImplementation(add)
+
+    await driver.enqueue('default', { name: 'j', payload: {} })
+
+    // BullMQ's own default is attempts: 0, whose retry condition
+    // (attemptsMade + 1 < attempts) is never true. Sending an explicit 0 or
+    // undefined must not be confused with sending 1.
+    const opts = add.mock.calls[0]![2] as Record<string, unknown>
+    expect(opts.attempts).toBeUndefined()
+    expect(opts.backoff).toBeUndefined()
   })
 })

@@ -155,6 +155,13 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
     enqueue: async (queue, job) => {
       const added = await queueOf(queue).add(job.name, encodePayload(job.payload), {
         delay: job.delay,
+        // Straight through, no arithmetic: EnqueueOptions.attempts already
+        // means what BullMQ's attempts means. Before this, nothing passed
+        // attempts at all, BullMQ defaulted to 0, and `attemptsMade + 1 < 0`
+        // is never true — so a failing job was never retried in production
+        // while the memory driver retried it three times.
+        attempts: job.attempts,
+        backoff: job.backoff,
         removeOnComplete: { count: 1000 },
         removeOnFail: { count: 5000 },
       })
