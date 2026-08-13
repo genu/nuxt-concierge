@@ -21,6 +21,33 @@ Opt out globally:
 concierge: { defaults: { attempts: 1 } }
 ```
 
+### ⚠️ Behaviour change: `worker.queues` replaces the defaults instead of merging
+
+`concierge.worker.queues` is now exactly the map you write. Previously `@nuxt/kit` deep-merged
+it against the module defaults before the module ever saw it, so a `default: 5` entry was
+silently added to every config.
+
+**This can stop an app booting.** `defineJob` defaults a job's queue to `default`, so if your
+config declares only other queues:
+
+```ts
+concierge: { worker: { queues: { mail: 2 } } }
+```
+
+then any job that does not set `queue:` explicitly now fails at boot with:
+
+```
+[nuxt-concierge] job "send-email" targets queue "default", which is not declared in
+concierge.worker.queues (declared: mail).
+```
+
+That error is the point — it is the guardrail that stops a job silently never running — but it
+was unreachable while the merge was quietly re-adding `default`. Either declare `default` in
+your map, or set `queue:` on every job.
+
+The old behaviour also meant a consumer, a Redis connection and a no-worker watch were started
+for a `default` queue nobody asked for.
+
 ### 🚀 Features
 
 - `defineJob<Payload>` types `ctx.payload`, and `useQueue().enqueue` is generic over a generated
