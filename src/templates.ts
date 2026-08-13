@@ -243,3 +243,83 @@ export const createTemplateType = () => {
     { nitro: true }
   );
 };
+
+/**
+ * Declares the `#concierge/*` aliases that `nitro:config` registers (see
+ * `createTemplateType` below). Those aliases resolve at BUILD time but were
+ * invisible to TypeScript, which is why `ui-handler.ts`'s import of
+ * `#concierge/supervisor` was a TS2307 error.
+ *
+ * Emitted into BOTH the nitro graph AND the app graph. `ui-handler.ts` is
+ * itself a registered server ROUTE (see `src/module.ts`'s `addServerHandler`
+ * calls), so `nitro-routes.d.ts` references it (to type its response) and
+ * drags its entire import graph — including `#concierge/supervisor` — into
+ * the APP program too, the same way it does for `#concierge` (see Task 4).
+ * A nitro-only declaration (`{ nitro: true }`) is therefore invisible to the
+ * exact program that `pnpm typecheck` (`vue-tsc` via the app tsconfig)
+ * checks, and the TS2307 persists there even though the nitro/server graph
+ * resolves fine. Confirmed by direct experiment, not assumption.
+ *
+ * Each module below declares its exports individually as
+ * `const <name>: typeof import("<path>").<name>` rather than
+ * `export * from "<path>"`. `export *` was tried first and silently failed:
+ * with `skipLibCheck: true` (set by every generated tsconfig here), a
+ * `.d.ts`'s `export * from` that can't be resolved/typed cleanly is not
+ * reported as an error — it just yields a module with zero exported
+ * members, which then surfaces confusingly downstream as "has no exported
+ * member 'getSupervisor'" at the IMPORT site rather than at the declaration
+ * site. Do not "simplify" this back to `export *`.
+ */
+export const createTemplateInternalTypes = () => {
+  const { resolve } = createResolver(import.meta.url);
+
+  const modules: Record<string, { path: string; exports: string[] }> = {
+    "#concierge/role": {
+      path: "./runtime/server/role",
+      exports: ["resolveRole", "resolveVersion"],
+    },
+    "#concierge/supervisor": {
+      path: "./runtime/server/supervisor",
+      exports: ["getSupervisor", "createSupervisor"],
+    },
+    "#concierge/shutdown": {
+      path: "./runtime/server/shutdown",
+      exports: ["installShutdown", "defineConciergePlugin"],
+    },
+    "#concierge/guardrails": {
+      path: "./runtime/server/guardrails",
+      exports: ["checkGuardrails"],
+    },
+  };
+
+  const declarations = Object.entries(modules)
+    .map(([specifier, { path, exports: names }]) => {
+      const resolved = resolve(path);
+      const members = names
+        .map(
+          (name) =>
+            `    const ${name}: typeof import("${resolved}").${name};`
+        )
+        .join("\n");
+      return `  declare module "${specifier}" {\n${members}\n  }`;
+    })
+    .join("\n");
+
+  addTypeTemplate(
+    {
+      filename: "types/concierge-internal.d.ts",
+      write: true,
+      getContents: () => declarations,
+    },
+    { nitro: true }
+  );
+
+  // Same contents, no options object: registers via the `prepare:types`
+  // hook (app graph / `nuxt.d.ts`) instead of `nitro:prepare:types`. Both
+  // are needed — see the doc comment above.
+  addTypeTemplate({
+    filename: "types/concierge-internal-app.d.ts",
+    write: true,
+    getContents: () => declarations,
+  });
+};

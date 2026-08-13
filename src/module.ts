@@ -15,7 +15,11 @@ import {
 } from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { scanJobs } from "./scan";
-import { createTemplateNuxtPlugin, createTemplateType } from "./templates";
+import {
+  createTemplateNuxtPlugin,
+  createTemplateType,
+  createTemplateInternalTypes,
+} from "./templates";
 import type { ModuleOptions } from "./options";
 import { moduleDefaults } from "./options";
 import { resolveRole } from "./runtime/server/role";
@@ -64,6 +68,7 @@ export default defineNuxtModule<ModuleOptions>({
       jobs.map((job) => job.name)
     );
     createTemplateType();
+    createTemplateInternalTypes();
 
     if (nuxt.options.dev) {
       const plural = (word: string, count: number) =>
