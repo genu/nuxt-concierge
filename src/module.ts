@@ -67,7 +67,7 @@ export default defineNuxtModule<ModuleOptions>({
       jobs.map((job) => job.file),
       jobs.map((job) => job.name)
     );
-    createTemplateType();
+    createTemplateType(jobs);
     createTemplateInternalTypes();
 
     if (nuxt.options.dev) {

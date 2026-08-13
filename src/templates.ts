@@ -4,6 +4,7 @@ import {
   createResolver,
   useNuxt,
 } from "@nuxt/kit";
+import type { ScannedJob } from "./scan";
 
 const importFiles = (files: string[], prefix: string = "file") =>
   files
@@ -175,7 +176,75 @@ export default defineConciergePlugin((nitroApp) => {
   });
 };
 
-export const createTemplateType = () => {
+/**
+ * Emits the generated half of the `#concierge` module declaration: one
+ * `ConciergeJobMap` entry per scanned job, keyed by the job's name and valued
+ * by the job's ENQUEUE-side payload type (the schema input when the job
+ * declares one, otherwise its handler's payload type — see `EnqueueInputOf`).
+ *
+ * Three things make this work and all three are load-bearing:
+ *
+ * 1. It augments `#concierge`, the SAME ambient module the `useQueue`
+ *    declaration lives in. Ambient `declare module` blocks with matching
+ *    specifiers MERGE, so `ConciergeJobMap` here and the empty one declared
+ *    alongside `useQueue` become a single interface. Augmenting any other
+ *    specifier — a package subpath, a global — would create a second,
+ *    unrelated interface that `useQueue` never sees, and every enqueue would
+ *    silently fall back to the empty one with no error anywhere.
+ *
+ * 2. `typeof import(...)` is type-only, so nothing here enters any bundle.
+ *    Job modules are still imported eagerly by the runtime plugin; that is a
+ *    separate concern and deliberately unchanged (see the spec's
+ *    "Why there is no AST extraction").
+ *
+ * 3. Each entry is wrapped in `EnqueueInputOf<...>`, not left as the bare
+ *    `typeof import(...)["default"]`. `TypedQueue<Map>` (see
+ *    src/runtime/server/utils/useQueue.ts) uses `Map[K]` directly as the
+ *    `enqueue` payload parameter's type, so `Map[K]` must already BE the
+ *    payload type. The bare default-export type is `JobDefinition<In, Out>`
+ *    itself (an object with `name`/`queue`/`handler`/`run`), not a payload —
+ *    confirmed empirically: without this wrapper, a correct call like
+ *    `enqueue('slow', { seq, durationMs })` fails to typecheck with TS2353,
+ *    because the target type is the whole job definition, not its payload.
+ *
+ * Names and paths come straight from `scanJobs()` so there is exactly one
+ * source of truth for what a job is called.
+ */
+export const buildJobMapDeclaration = (
+  jobs: ScannedJob[],
+  // Injected so the unit test can assert the emitted text VERBATIM, including
+  // the module qualification on EnqueueInputOf. Asserting it with a wildcard
+  // regex would leave the qualifier's absence indistinguishable from a path
+  // change, and its absence is the one silent failure mode here: an
+  // unresolvable name inside a generated .d.ts is swallowed by skipLibCheck,
+  // making Map[K] an error type and every enqueue payload effectively `any`.
+  typesModule: string = createResolver(
+    import.meta.url
+  ).resolve("./runtime/server/types")
+): string => {
+  const entries = jobs
+    .map(
+      (job) =>
+        `      ${JSON.stringify(
+          job.name
+        )}: import(${JSON.stringify(
+          typesModule
+        )}).EnqueueInputOf<typeof import(${JSON.stringify(
+          job.file.replace(/\.(ts|js|mjs)$/, "")
+        )})["default"]>;`
+    )
+    .join("\n");
+
+  return `
+  declare module "#concierge" {
+    interface ConciergeJobMap {
+${entries}
+    }
+  }
+  `;
+};
+
+export const createTemplateType = (jobs: ScannedJob[] = []) => {
   const { resolve } = createResolver(import.meta.url);
   const nuxt = useNuxt();
 
@@ -202,68 +271,92 @@ export const createTemplateType = () => {
     );
   });
 
-  // Both templates declare modules that only ever exist in the nitro/server
-  // build (#concierge-handlers, #concierge — see the nitro:config alias hook
-  // above). Without `{ nitro: true }`, addTypeTemplate defaults to the
-  // app/client graph, which leaks `declare module "#concierge"` into client
-  // typings: a consumer importing `useQueue` in client code would typecheck
-  // against that ambient declaration and only fail at build time, when the
-  // client bundler can't actually resolve the alias.
-  addTypeTemplate(
-    {
-      filename: "types/concierge-handlers.d.ts",
-      write: true,
-      getContents() {
-        return `
+  // `#concierge-handlers` must ALSO be declared in BOTH graphs, for the same
+  // reason `#concierge` is below: `buildJobMapDeclaration`'s app-graph copy
+  // does `typeof import(job.file)["default"]` for every scanned job, which
+  // pulls each job MODULE — not just its type — into the app program to
+  // compute that type. Every job module imports `defineJob` from
+  // `#concierge-handlers` (see `playground/server/jobs/slow.ts`), so a
+  // nitro-only declaration here left that import unresolved (TS2307) in the
+  // app graph as soon as a real job existed to scan. Confirmed by direct
+  // experiment against the playground, not assumption.
+  const conciergeHandlersModule = `
   declare module "#concierge-handlers" {
    const defineJob: typeof import("${resolve(
      "./runtime/server/handlers/defineJob"
    )}").defineJob;
   }
       `;
-      },
-    },
-    { nitro: true }
-  );
 
-  // `#concierge` must be declared in BOTH graphs.
+  // `useQueue` is declared as TypedQueue<ConciergeJobMap> rather than as
+  // `typeof import(...).useQueue`: the runtime signature is deliberately
+  // loose (there is no map at runtime, only the supervisor's registry), and
+  // `TypedQueue<Map>` itself — the generic surface — is imported from the
+  // source file rather than redeclared here, so ITS shape cannot drift from
+  // useQueue.ts. This does NOT guarantee `useQueue`'s own signature can't
+  // drift: this declaration hardcodes `() => TypedQueue<ConciergeJobMap>`
+  // rather than deriving from `typeof import(...).useQueue`, so a new
+  // parameter added to the real `useQueue` would go unnoticed here.
   //
-  // The nitro copy is the one that matters for correctness of server code.
-  // The app copy exists because nitro generates `types/nitro-routes.d.ts`
-  // containing `typeof import('<rootDir>/server/api/foo.post')` for every
-  // server route, and `.nuxt/nuxt.d.ts` references it — so every server
-  // route handler is pulled into the APP program to compute $fetch's return
-  // types. A route that imports `#concierge` (an API route that enqueues a
-  // job and returns JSON — the primary documented usage) therefore failed
-  // with TS2307 in the app program while resolving fine in the server one.
-  //
-  // The cost, accepted deliberately: client code importing `useQueue` now
-  // typechecks and fails later, at build time, when the client bundler
-  // cannot resolve the alias. That footgun is loud and visible in review;
-  // breaking correct server code is worse than failing to prevent incorrect
-  // client code.
+  // `ConciergeJobMap` is declared EMPTY here and filled by
+  // buildJobMapDeclaration's separate template. Both are ambient
+  // `declare module "#concierge"` blocks, so they merge.
   const conciergeModule = `
   declare module "#concierge" {
-    const useQueue: typeof import("${resolve(
+    interface ConciergeJobMap {}
+
+    const useQueue: () => import("${resolve(
       "./runtime/server/utils/useQueue"
-    )}").useQueue;
+    )}").TypedQueue<ConciergeJobMap>;
   }
   `;
 
-  addTypeTemplate(
-    {
-      filename: "types/concierge.d.ts",
-      write: true,
-      getContents: () => conciergeModule,
-    },
-    { nitro: true }
-  );
+  const jobMap = buildJobMapDeclaration(jobs);
 
-  addTypeTemplate({
-    filename: "types/concierge-app.d.ts",
-    write: true,
-    getContents: () => conciergeModule,
-  });
+  // Both declarations go into BOTH graphs. See the Task 4 note: nitro's
+  // generated `nitro-routes.d.ts` references every server route handler to
+  // type $fetch, which pulls those handlers into the APP program — so a route
+  // that imports `#concierge` fails with TS2307 there unless the app graph
+  // has the declaration too.
+  //
+  // The cost, accepted deliberately: client code now typechecks against
+  // these ambient declarations too, so `import { useQueue } from '#concierge'`
+  // or `import { defineJob } from '#concierge-handlers'` in client code
+  // compiles fine and only fails later, at build time, when the client
+  // bundler can't actually resolve the alias. That footgun is loud and
+  // visible in review; breaking correct server code (the TS2307 above) is
+  // worse than failing to prevent incorrect client code.
+  for (const [suffix, options] of [
+    ["", { nitro: true as const }],
+    ["-app", undefined],
+  ] as const) {
+    addTypeTemplate(
+      {
+        filename: `types/concierge-handlers${suffix}.d.ts`,
+        write: true,
+        getContents: () => conciergeHandlersModule,
+      },
+      options
+    );
+
+    addTypeTemplate(
+      {
+        filename: `types/concierge${suffix}.d.ts`,
+        write: true,
+        getContents: () => conciergeModule,
+      },
+      options
+    );
+
+    addTypeTemplate(
+      {
+        filename: `types/concierge-jobs${suffix}.d.ts`,
+        write: true,
+        getContents: () => jobMap,
+      },
+      options
+    );
+  }
 };
 
 /**
