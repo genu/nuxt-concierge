@@ -431,10 +431,24 @@ a different and weaker claim.
 
 ### Lifecycle
 
-One scenario against the real built output: boot the playground on `memory`, enqueue a job that
-fails, poll the API until it appears as `failed`, retry it, and assert it ran again via the
-existing append-only `CONCIERGE_TEST_LOG`. That covers the SPI, the API, the ring buffer and
-retry in a single path. Readiness comes from polling, never from a fixed sleep.
+One scenario: boot the playground on `memory`, enqueue a job that fails, poll the API until it
+appears as `failed`, retry it, and assert it ran again via the existing append-only
+`CONCIERGE_TEST_LOG`. That covers the SPI, the API, the ring buffer and retry in a single path.
+Readiness comes from polling, never from a fixed sleep.
+
+**It must run against a dev server, not the built output**, and this is a constraint rather than
+a preference. The existing harness spawns `playground/.output/server/index.mjs` with
+`NODE_ENV: production` ([harness.ts:62-85](../test/lifecycle/harness.ts)), and every dashboard
+route in this spec is registered only under `nuxt.options.dev` — so there is no dashboard in that
+artifact to test. The harness therefore gains a `spawnDevApp()` that runs `nuxi dev playground`.
+
+The consequence, recorded because it is the reason this scenario is not optional: since the
+dashboard exists only in dev, **no production-build test can cover any of it**. Without a
+dev-server scenario, nothing in the suite ever loads the real SPA, the real `publicAssets`
+registration, or the real API through a real Nitro server — the module-registration unit test
+proves the routes are *registered*, never that they *respond*. This scenario is also where the
+`publicAssets` fallthrough assumption recorded under "Process shape and route table" gets settled
+by experiment.
 
 This adds a third lifecycle file, which makes **issue #21** materially worse — the suite already
 rebuilds the playground once per file and grows linearly. A `globalSetup` is folded into this
