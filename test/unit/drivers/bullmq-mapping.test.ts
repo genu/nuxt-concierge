@@ -1,12 +1,43 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+import { UnrecoverableError } from 'bullmq'
 import {
   buildConnection,
+  createBullmqDriver,
   isPermanentFailure,
   resolveBullmqOptions,
   workerRecordKey,
   WORKER_KEY_PREFIX,
 } from '../../../src/runtime/server/drivers/bullmq'
-import { UnsupportedEnvelopeError } from '../../../src/runtime/server/envelope'
+import { encodePayload, UnsupportedEnvelopeError } from '../../../src/runtime/server/envelope'
+
+/**
+ * `consume()` reaches into a real `bullmq` `Worker`, which opens a real Redis
+ * connection on construction. Mocking the module lets this test drive the
+ * exact processor function the driver registers — the seam that converts a
+ * `retryable === false` throw into `UnrecoverableError` — without a live
+ * Redis, and without touching anything the other tests in this file exercise
+ * (they only call the pure helpers above, never `consume`).
+ */
+const { capturedProcessors } = vi.hoisted(() => ({
+  capturedProcessors: [] as Array<(job: unknown) => Promise<void>>,
+}))
+
+vi.mock('bullmq', () => {
+  class UnrecoverableError extends Error {}
+  class Worker {
+    constructor(_name: string, processor: (job: unknown) => Promise<void>) {
+      capturedProcessors.push(processor)
+    }
+
+    on() { return this }
+    close = vi.fn(async () => {})
+    pause = vi.fn(async () => {})
+  }
+  class Queue {
+    close = vi.fn(async () => {})
+  }
+  return { Worker, Queue, UnrecoverableError }
+})
 
 describe('bullmq connection mapping', () => {
   it('prefers a url when given', () => {
@@ -64,5 +95,67 @@ describe('isPermanentFailure', () => {
 
   it('is true for any object literal carrying retryable: false', () => {
     expect(isPermanentFailure({ retryable: false })).toBe(true)
+  })
+})
+
+describe('consume() job processor', () => {
+  it('converts a retryable:false error thrown by a registered handler into UnrecoverableError', async () => {
+    const driver = createBullmqDriver({ connection: { url: 'redis://127.0.0.1:6379' } })
+
+    class ValidationLikeError extends Error {
+      readonly retryable = false
+    }
+
+    const handler = vi.fn(async () => {
+      throw new ValidationLikeError('payload invalid')
+    })
+
+    driver.consume('q', { concurrency: 1 }, handler)
+
+    const processor = capturedProcessors.at(-1)!
+    const job = {
+      id: 'job-1',
+      name: 'j',
+      processedOn: Date.now(),
+      attemptsMade: 0,
+      data: encodePayload({ n: 1 }),
+    }
+
+    await expect(processor(job)).rejects.toThrow(UnrecoverableError)
+
+    // Both halves: the conversion must actually run through a registered
+    // handler thrown from `consume()`'s real processor — not merely prove
+    // `isPermanentFailure` returns true for a synthetic object, which the
+    // suite above already covers.
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a plain retryable error alone so BullMQ still retries it', async () => {
+    const driver = createBullmqDriver({ connection: { url: 'redis://127.0.0.1:6379' } })
+
+    const handler = vi.fn(async () => {
+      throw new Error('transient failure')
+    })
+
+    driver.consume('q2', { concurrency: 1 }, handler)
+
+    const processor = capturedProcessors.at(-1)!
+    const job = {
+      id: 'job-2',
+      name: 'j',
+      processedOn: Date.now(),
+      attemptsMade: 0,
+      data: encodePayload({ n: 1 }),
+    }
+
+    // Captured as a value (not inspected inside a catch clause) so the
+    // assertions below are unconditional: they run whether or not the
+    // promise actually rejects, rather than being skipped if it resolves.
+    const rejection: unknown = await processor(job).catch((e: unknown) => e)
+
+    expect(rejection).toBeInstanceOf(Error)
+    expect(rejection).not.toBeInstanceOf(UnrecoverableError)
+    expect((rejection as Error).message).toBe('transient failure')
+    expect(handler).toHaveBeenCalledTimes(1)
   })
 })

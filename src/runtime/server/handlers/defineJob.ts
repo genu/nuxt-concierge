@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { BackoffOptions, JobContext, JobDefinition, JobHandler } from '../types'
+import { validateOnConsume } from '../validate'
 
 export interface DefineJobOptions<Out> {
   /** Defaults to the filename, resolved at build time. */
@@ -56,8 +57,19 @@ export function defineJob(
     input: opts.input,
     attempts: opts.attempts,
     backoff: opts.backoff,
-    // Task 7 replaces this body with one that validates first. Kept as a
-    // pass-through here so this task is independently testable.
-    run: (ctx: JobContext<unknown>) => handler(ctx),
+    /**
+     * Validation lives here, inside the function the driver calls, so a
+     * failure throws inside the driver's own try/catch and its existing
+     * `retryable === false` branch classifies it as permanent. Validating
+     * before handing the job to the driver would put the throw outside that
+     * handling and lose the classification.
+     */
+    run: async (ctx: JobContext<unknown>) => {
+      const payload = opts.input
+        ? await validateOnConsume(opts.input, ctx.name, ctx.payload)
+        : ctx.payload
+
+      await handler({ ...ctx, payload })
+    },
   }
 }
