@@ -49,6 +49,11 @@ export interface EnqueueOptions {
    * driver. Absent means "do not deduplicate this enqueue".
    */
   dedup?: DedupOptions
+  /**
+   * Set only by a driver's own scheduler when producing a tick, never by
+   * `useQueue`. It is what populates `JobContext.cron`.
+   */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 export interface ConsumeOptions {

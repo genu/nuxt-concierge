@@ -1,8 +1,9 @@
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
+import { nextFireTime } from '../cron'
 import type { MemoryOptions } from '../../../options'
 import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
-import type { ConciergeDriver, Consumer, DedupOptions, EnqueueOptions, JobDetail, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, DedupOptions, EnqueueOptions, JobDetail, JobState, JobSummary, ScheduleSpec } from './types'
 
 /** Exported so tests can spy on it instead of asserting on console output. */
 export const logger = consola.create({}).withTag('nuxt-concierge')
@@ -21,6 +22,8 @@ interface QueuedJob {
   backoff?: BackoffOptions
   createdAt: number
   dedup?: DedupOptions
+  /** Present only when this job was produced by the driver's own scheduler. */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 /**
@@ -164,6 +167,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     backoff: job.backoff,
     createdAt: Date.now(),
     dedup: job.dedup,
+    cron: job.cron,
   })
 
   const remember = (record: TerminalRecord) => {
@@ -252,7 +256,79 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       }))
   }
 
-  return {
+  interface ScheduleEntry {
+    spec: ScheduleSpec
+    queue: string
+    next: number
+    iterationCount: number
+    timer?: ReturnType<typeof setTimeout>
+  }
+
+  const schedules = new Map<string, ScheduleEntry>()
+  const scheduleKey = (queue: string, id: string) => `${queue}::${id}`
+
+  /**
+   * Node/V8 timer delays are a 32-bit signed int internally
+   * (`TimeoutOverflowWarning`): a `setTimeout` asked for longer than this is
+   * silently clamped to fire almost immediately instead of throwing. A
+   * monthly cron (up to 31 days) already exceeds it, and yearly comfortably
+   * does — without the chunking below, `arm` would fire such a schedule
+   * within ~1ms of being armed and then keep re-firing in a tight loop
+   * instead of waiting for the real next tick.
+   */
+  const MAX_TIMEOUT_MS = 2_147_483_647
+
+  /**
+   * Arms one timer for the NEXT tick only, re-arming after each fire — never a
+   * setInterval. A cron expression's gaps are not uniform (month lengths, DST),
+   * so an interval would drift; and one live timer per schedule is what makes
+   * `close()` able to stop everything deterministically.
+   */
+  const arm = (key: string) => {
+    const entry = schedules.get(key)
+    if (!entry) return
+
+    const delay = Math.max(0, entry.next - Date.now())
+
+    if (delay > MAX_TIMEOUT_MS) {
+      // Wait out the largest safe chunk and re-arm, without firing anything
+      // or consuming the tick — this only shortens the remaining wait.
+      entry.timer = setTimeout(() => arm(key), MAX_TIMEOUT_MS)
+      entry.timer.unref?.()
+      return
+    }
+
+    entry.timer = setTimeout(() => {
+      const current = schedules.get(key)
+      if (!current) return
+
+      void driverSelf.enqueue(current.queue, {
+        name: current.spec.jobName,
+        payload: current.spec.payload,
+        cron: {
+          // The SCHEDULED time, not Date.now(). They differ by timer latency,
+          // and only the scheduled time is stable across a retry of this tick.
+          tick: current.next,
+          expression: current.spec.expression,
+          tz: current.spec.tz,
+        },
+      })
+
+      current.iterationCount++
+      current.next = nextFireTime(current.spec.expression, current.spec.tz, current.next)
+      arm(key)
+    }, delay)
+    // Never holds the process open on its own — only real work should. Matches
+    // how the supervisor's heartbeat interval is handled.
+    entry.timer.unref?.()
+  }
+
+  const disarm = (entry: ScheduleEntry) => {
+    if (entry.timer) clearTimeout(entry.timer)
+    entry.timer = undefined
+  }
+
+  const driverSelf: ConciergeDriver = {
     name: 'memory',
     capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
 
@@ -369,11 +445,51 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       },
     },
 
+    schedule: {
+      upsert: async (queue, spec) => {
+        const scheduleId = scheduleKey(queue, spec.id)
+        const existing = schedules.get(scheduleId)
+        // Update IN PLACE rather than remove-then-add: a remove-then-add would
+        // open a window in which the schedule does not exist, and would reset
+        // iterationCount on every boot of every instance.
+        if (existing) disarm(existing)
+
+        schedules.set(scheduleId, {
+          spec,
+          queue,
+          next: nextFireTime(spec.expression, spec.tz, Date.now()),
+          iterationCount: existing?.iterationCount ?? 0,
+        })
+        arm(scheduleId)
+      },
+
+      list: async queue => [...schedules.values()]
+        .filter(e => e.queue === queue)
+        .map(e => ({
+          id: e.spec.id,
+          jobName: e.spec.jobName,
+          queue: e.queue,
+          expression: e.spec.expression,
+          tz: e.spec.tz,
+          next: e.next,
+          iterationCount: e.iterationCount,
+        })),
+
+      remove: async (queue, id) => {
+        const scheduleId = scheduleKey(queue, id)
+        const entry = schedules.get(scheduleId)
+        if (entry) disarm(entry)
+        schedules.delete(scheduleId)
+      },
+    },
+
     init: async () => {},
     isHealthy: () => true,
 
     close: async (force) => {
       await Promise.all(consumers.splice(0).map(c => c.close(force)))
+      for (const entry of schedules.values()) disarm(entry)
+      schedules.clear()
       pending.clear()
       history.clear()
       inFlight.clear()
@@ -466,6 +582,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             queue,
             attempt: job.attempt,
             payload: decodePayload(job.envelope),
+            cron: job.cron,
           })
 
           releaseDedupOnFinalize(queue, job.dedup?.id, job.id)
@@ -600,4 +717,6 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       return [...records.values()].map(e => e.record)
     },
   }
+
+  return driverSelf
 }
