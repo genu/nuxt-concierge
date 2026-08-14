@@ -209,6 +209,10 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
     // Health is NOT part of the dashboard — it is the production readiness
     // probe (gated by role, not by dev) and must survive under both halves.
     expect(handlers.some(h => h.route === '/_concierge/health')).toBe(true)
+
+    // The dashboard's API routes are dev-only, gated at registration time —
+    // no runtime flag or env var may re-enable them in production.
+    expect(handlers.some(h => h.route?.startsWith('/_concierge/api'))).toBe(false)
   })
 
   it('still registers the health route in dev', async () => {
@@ -222,6 +226,10 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
     await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
 
     expect(handlers.some(h => h.route === '/_concierge/health')).toBe(true)
+
+    // The overview endpoint (Task 8) is the first entry in API_HANDLERS — it
+    // must actually be registered in dev, not merely present in the map.
+    expect(handlers.some(h => h.route?.startsWith('/_concierge/api'))).toBe(true)
   })
 
   it('no longer registers the bull-board routes or transpiles its packages', async () => {

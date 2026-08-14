@@ -92,7 +92,9 @@ export default defineNuxtModule<ModuleOptions>({
       // Tasks 8-10 populate this as their handler files land. Registering a
       // route against a handler file that doesn't exist yet would break the
       // build, so the loop starts empty rather than pointing at nothing.
-      const API_HANDLERS: Record<string, string> = {};
+      const API_HANDLERS: Record<string, string> = {
+        "/_concierge/api/overview": "./runtime/server/routes/api/overview",
+      };
 
       for (const [route, handlerFile] of Object.entries(API_HANDLERS)) {
         addServerHandler({ route, handler: resolve(handlerFile) });
