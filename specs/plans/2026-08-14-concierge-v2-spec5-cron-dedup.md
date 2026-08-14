@@ -1316,19 +1316,30 @@ defineJob({ crons: '0 9 * * *', handler: async () => {} })
 defineJob({ cron: '0 9 * * *', handler: async () => {} })
 ```
 
-Append to `test/types/enqueue.test-d.ts`:
+Append to `test/types/enqueue.test-d.ts`, following that file's documented convention: the real
+`ConciergeJobMap` is an ambient build-time declaration a type test **cannot import**, so the file
+already asserts against a local `TestJobMap` built from `EnqueueInputOf`. Extend that stand-in
+rather than referencing `ConciergeJobMap` directly.
 
 ```ts
-// A cron job is an ordinary member of the generated map, with its payload type
-// intact — which is what makes dashboard run-now an `enqueue` call rather than
-// a second write path.
-expectTypeOf<ConciergeJobMap['scheduled-digest']>().toEqualTypeOf<{ scope: string }>()
+// A cron job is an ordinary map member with its payload type intact — which is
+// what makes dashboard run-now an `enqueue` call rather than a second write
+// path. Declaring `cron` must not collapse the payload to `unknown`, which is
+// exactly what would happen if the new option disturbed EnqueueInputOf's
+// two-parameter inference.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used below via `typeof digest`, a type-only reference
+const digest = defineJob({
+  input: z.object({ scope: z.string() }),
+  cron: { expression: '0 9 * * MON', payload: { scope: 'weekly' } },
+  handler: () => {},
+})
+
+expectTypeOf<EnqueueInputOf<typeof digest>>().toEqualTypeOf<{ scope: string }>()
 ```
 
-> This case requires a `scheduled-digest` job in the type-test fixture app
-> declaring `input: z.object({ scope: z.string() })` and a `cron`. Add it
-> alongside the existing fixtures rather than reusing one, so a later edit to
-> another fixture cannot silently remove this coverage.
+> `test/unit/templates.test.ts` covers the generator's emitted text; together
+> the two halves cover "a cron job reaches the generated map with its payload
+> type", which neither can assert alone.
 
 - [ ] **Step 6: Run the tests**
 
@@ -1810,6 +1821,7 @@ git commit -m "feat(spec5): bullmq deduplication pass-through and deduplicationI
 
 **Files:**
 - Modify: `src/runtime/server/drivers/memory.ts`
+- Modify: `src/runtime/server/drivers/types.ts` (adds `EnqueueOptions.cron`, in Step 3)
 - Test: `test/unit/drivers/memory-schedule.test.ts`
 
 **Interfaces:**
@@ -2298,7 +2310,8 @@ guarded on `REDIS_URL`, which CI supplies.
 
 - [ ] **Step 1: Write the table**
 
-Replace `test/unit/cron-dedup-conformance.test.ts`'s contents, keeping the Task 1 cases and adding:
+**Keep every case Task 1 wrote in this file** — the `sync` absence assertion and the two
+enqueue-result-shape cases are regression guards, not scaffolding. Add the driver table below them:
 
 ```ts
 import { afterEach, describe, expect, it } from 'vitest'
@@ -2799,53 +2812,76 @@ git commit -m "feat(spec5): boot-time schedule reconciliation in the supervisor"
 
 Append to `test/unit/useQueue.test.ts`:
 
+Follow the file's existing pattern exactly — `baseConfig(...)` + `createSupervisor` + `vi.spyOn(supervisor.driver, 'enqueue')`, with the `afterEach(resetSupervisor)` already at the top of the file. There is no `harness()` helper in this repo; do not invent one.
+
 ```ts
 describe('useQueue deduplication', () => {
   it('passes no dedup option for a job that declares none', async () => {
-    const { driver } = harness({ jobs: [defineJob({ name: 'plain', handler: async () => {} })] })
+    const job = defineJob({ name: 'plain', handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
     await useQueue().enqueue('plain', {})
-    expect(driver.enqueue).toHaveBeenCalledWith('default', expect.objectContaining({ dedup: undefined }))
+
+    expect(spy).toHaveBeenCalledWith('default', expect.objectContaining({ dedup: undefined }))
   })
 
   it('resolves lock mode to an id with no ttl', async () => {
-    const { driver } = harness({ jobs: [defineJob({ name: 'u', unique: true, handler: async () => {} })] })
+    const job = defineJob({ name: 'u', unique: true, handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
     await useQueue().enqueue('u', { a: 1 })
-    const [, opts] = driver.enqueue.mock.calls[0]!
-    expect(opts.dedup).toEqual({ id: expect.any(String) })
+
+    expect(spy.mock.calls[0]![1].dedup).toEqual({ id: expect.any(String) })
   })
 
   it("uses the job's uniqueId, namespaced by job name", async () => {
-    const { driver } = harness({
-      jobs: [defineJob({
-        name: 'invoice',
-        unique: true,
-        uniqueId: (p: { id: number }) => `i:${p.id}`,
-        handler: async () => {},
-      })],
+    const job = defineJob<{ id: number }>({
+      name: 'invoice',
+      unique: true,
+      uniqueId: p => `i:${p.id}`,
+      handler: () => {},
     })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
     await useQueue().enqueue('invoice', { id: 7 })
-    expect(driver.enqueue.mock.calls[0]![1].dedup.id).toBe('invoice:i:7')
+
+    expect(spy.mock.calls[0]![1].dedup!.id).toBe('invoice:i:7')
   })
 
   it('derives the key from the RAW payload, before any transform', async () => {
     // uniqueId runs on the producer alongside validateOnEnqueue, whose result
-    // is discarded — so the key must be derived from what the caller passed,
-    // not from a transformed value that only exists in the worker.
-    const schema = z.object({ n: z.string().transform(Number) })
-    const { driver } = harness({
-      jobs: [defineJob({
-        name: 't', input: schema, unique: true,
-        uniqueId: (p: { n: string }) => `n:${p.n}`,
-        handler: async () => {},
-      })],
+    // is discarded — so the key must come from what the caller passed, not
+    // from a transformed value that only exists in the worker. `n` is a string
+    // here and a number after the transform, so a key of "t:n:5" proves the
+    // raw side and "t:n:5" from a transformed payload would read the same —
+    // which is why the assertion below also checks the payload handed to the
+    // driver is still the raw one.
+    const job = defineJob({
+      name: 't',
+      input: z.object({ n: z.string().transform(Number) }),
+      unique: true,
+      uniqueId: p => `n:${p.n}`,
+      handler: () => {},
     })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
     await useQueue().enqueue('t', { n: '5' })
-    expect(driver.enqueue.mock.calls[0]![1].dedup.id).toBe('t:n:5')
+
+    expect(spy.mock.calls[0]![1].dedup!.id).toBe('t:n:5')
+    // Both halves: the transform must not have been applied to what was
+    // enqueued either, which is spec 3's transform-once invariant.
+    expect(spy.mock.calls[0]![1].payload).toEqual({ n: '5' })
   })
 
   it('returns the driver deduplicated flag to the caller', async () => {
-    const { driver } = harness({ jobs: [defineJob({ name: 'u', unique: true, handler: async () => {} })] })
-    driver.enqueue.mockResolvedValue({ id: 'existing', deduplicated: true })
+    const job = defineJob({ name: 'u', unique: true, handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    vi.spyOn(supervisor.driver, 'enqueue').mockResolvedValue({ id: 'existing', deduplicated: true })
+
     await expect(useQueue().enqueue('u', {})).resolves.toEqual({ id: 'existing', deduplicated: true })
   })
 })
@@ -2963,21 +2999,34 @@ describe('readSchedules', () => {
 })
 ```
 
-Append to `test/unit/api/overview.test.ts`:
+In `test/unit/api/overview.test.ts`, extend the existing `fakeSupervisor` helper — there is no
+`supervisorWith()` in this repo; do not invent one. Add `schedulable: boolean` to its `Partial<...>`
+option type and this to the `driver` object it builds:
 
 ```ts
-describe('overview schedulable flag', () => {
+    // Presence IS the capability, mirroring how `introspect` is faked above.
+    schedule: (over.schedulable ?? true)
+      ? {
+          upsert: async () => {},
+          list: async () => [],
+          remove: async () => {},
+        }
+      : undefined,
+```
+
+Then append the cases:
+
+```ts
+describe('buildOverview schedulable flag', () => {
   it('is true for a driver that declares scheduling', async () => {
-    const overview = await buildOverview(supervisorWith({ driver: createMemoryDriver() }))
-    expect(overview.schedulable).toBe(true)
+    expect((await buildOverview(fakeSupervisor())).schedulable).toBe(true)
   })
 
   it('is false for a driver that does not', async () => {
     // `sync` has no `schedule` at all, and an empty schedule list from such a
     // driver is indistinguishable from a codebase with no cron jobs — which is
     // exactly the confident-empty-table lie the flag exists to prevent.
-    const overview = await buildOverview(supervisorWith({ driver: createSyncDriver() }))
-    expect(overview.schedulable).toBe(false)
+    expect((await buildOverview(fakeSupervisor({ schedulable: false }))).schedulable).toBe(false)
   })
 
   it('is false when there is no supervisor at all', async () => {
