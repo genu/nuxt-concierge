@@ -1,177 +1,81 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalize, defaultDedupId, resolveDedup } from '../../src/runtime/server/dedup'
-
-describe('canonicalize', () => {
-  it('is insensitive to object key insertion order', () => {
-    // THE case this module exists for. Object key order is insertion-ordered
-    // in JS and devalue preserves it, so two call sites building the same
-    // logical payload in different orders would otherwise dedup inconsistently
-    // — a bug that passes every end-to-end test written by one author.
-    expect(canonicalize({ a: 1, b: 2 })).toBe(canonicalize({ b: 2, a: 1 }))
-  })
-
-  it('still distinguishes genuinely different payloads', () => {
-    // Paired with the case above deliberately: an implementation returning a
-    // constant satisfies "insensitive to key order" perfectly.
-    expect(canonicalize({ a: 1, b: 2 })).not.toBe(canonicalize({ a: 1, b: 3 }))
-  })
-
-  it('distinguishes a value from its string form', () => {
-    expect(canonicalize({ a: 1 })).not.toBe(canonicalize({ a: '1' }))
-  })
-
-  it('encodes Date by instant', () => {
-    const d = new Date('2026-08-14T00:00:00.000Z')
-    expect(canonicalize(d)).toBe(canonicalize(new Date(d.getTime())))
-    expect(canonicalize(d)).not.toBe(canonicalize(new Date(d.getTime() + 1)))
-  })
-
-  it('encodes Map by sorted entries, not insertion order', () => {
-    const a = new Map([['x', 1], ['y', 2]])
-    const b = new Map([['y', 2], ['x', 1]])
-    expect(canonicalize(a)).toBe(canonicalize(b))
-  })
-
-  it('encodes Set by sorted members, not insertion order', () => {
-    expect(canonicalize(new Set([1, 2]))).toBe(canonicalize(new Set([2, 1])))
-  })
-
-  it('preserves array order, which is semantic', () => {
-    // Arrays are NOT sorted: [1,2] and [2,1] are different payloads.
-    expect(canonicalize([1, 2])).not.toBe(canonicalize([2, 1]))
-  })
-
-  it('distinguishes an absent key from an explicit undefined', () => {
-    expect(canonicalize({ a: 1 })).not.toBe(canonicalize({ a: 1, b: undefined }))
-  })
-
-  it('distinguishes null from undefined', () => {
-    expect(canonicalize({ a: null })).not.toBe(canonicalize({ a: undefined }))
-  })
-
-  it('distinguishes two different regular expressions', () => {
-    expect(canonicalize(/abc/)).not.toBe(canonicalize(/xyz/))
-  })
-
-  it('distinguishes regexp flags', () => {
-    expect(canonicalize(/abc/g)).not.toBe(canonicalize(/abc/i))
-  })
-
-  it('distinguishes a regexp from an empty plain object', () => {
-    // `Object.entries(/abc/)` is `[]`, so without an explicit branch every
-    // regex canonicalizes identically to `{}`.
-    expect(canonicalize(/abc/)).not.toBe(canonicalize({}))
-  })
-
-  it('still treats two equal regexps as equal', () => {
-    // Paired with the three negatives above: an encoding that returned a fresh
-    // unique string per call would satisfy all of them and be useless.
-    expect(canonicalize(/abc/g)).toBe(canonicalize(/abc/g))
-  })
-
-  it('distinguishes a typed array from a plain object with the same entries', () => {
-    expect(canonicalize(new Uint8Array([1, 2, 3]))).not.toBe(canonicalize({ 0: 1, 1: 2, 2: 3 }))
-  })
-
-  it('distinguishes a class instance from a plain object with the same entries', () => {
-    class Point {
-      constructor(readonly x: number) {}
-    }
-    // Both have own enumerable `{ x: 1 }` and both brand as [object Object];
-    // only the plain-prototype check separates them.
-    expect(canonicalize(new Point(1))).not.toBe(canonicalize({ x: 1 }))
-  })
-
-  it('treats a null-prototype object as plain', () => {
-    // Object.create(null) is a plain bag of data, not an exotic type — the
-    // brand branch must not catch it, or a payload built with a null-prototype
-    // object would never dedup against its literal equivalent.
-    const bare = Object.create(null) as Record<string, unknown>
-    bare.a = 1
-    expect(canonicalize(bare)).toBe(canonicalize({ a: 1 }))
-  })
-
-  it('distinguishes two different URLs', () => {
-    // A URL has NO own enumerable properties, so the type brand alone gives
-    // every instance the same string. devalue stringifies URL natively, so
-    // this is an enqueueable payload, not a hypothetical one.
-    expect(canonicalize(new URL('http://a.example.com'))).not.toBe(canonicalize(new URL('http://b.example.com')))
-  })
-
-  it('still treats two equal URLs as equal', () => {
-    expect(canonicalize(new URL('http://a.example.com/x'))).toBe(canonicalize(new URL('http://a.example.com/x')))
-  })
-
-  it('distinguishes two different URLSearchParams', () => {
-    expect(canonicalize(new URLSearchParams('a=1'))).not.toBe(canonicalize(new URLSearchParams('a=2')))
-  })
-
-  it('distinguishes two different boxed numbers', () => {
-    expect(canonicalize(new Number(5))).not.toBe(canonicalize(new Number(6)))
-  })
-
-  it('distinguishes two different boxed booleans', () => {
-    expect(canonicalize(new Boolean(true))).not.toBe(canonicalize(new Boolean(false)))
-  })
-
-  it('falls back to brand plus entries for a type devalue refuses', () => {
-    // devalue throws "Cannot stringify arbitrary non-POJOs" for a class
-    // instance, so this exercises the catch. Two equal instances must still
-    // canonicalize equal — a false NEGATIVE here means dedup silently stops
-    // working, which is as bad as a collision.
-    class Point {
-      constructor(readonly x: number) {}
-    }
-    expect(canonicalize(new Point(1))).toBe(canonicalize(new Point(1)))
-    expect(canonicalize(new Point(1))).not.toBe(canonicalize(new Point(2)))
-  })
-
-  it('is insensitive to key order for an object with an inherited prototype chain', () => {
-    // Two logically-equal payloads sharing a non-Object.prototype, non-null
-    // prototype. These route past the plain-object check, so they exercise the
-    // branded path — which must still sort its entries. An implementation that
-    // delegated this value to a serializer with an insertion-order walk would
-    // return different keys and silently stop deduplicating.
-    const base = Object.create(null) as object
-    const first = Object.create(base) as Record<string, unknown>
-    first.a = 1
-    first.b = 2
-    const second = Object.create(base) as Record<string, unknown>
-    second.b = 2
-    second.a = 1
-
-    expect(canonicalize(first)).toBe(canonicalize(second))
-  })
-
-  it('still distinguishes differing values on an inherited prototype chain', () => {
-    // Paired with the case above: an encoding that ignored entries entirely
-    // would satisfy it.
-    const base = Object.create(null) as object
-    const first = Object.create(base) as Record<string, unknown>
-    first.a = 1
-    const second = Object.create(base) as Record<string, unknown>
-    second.a = 2
-
-    expect(canonicalize(first)).not.toBe(canonicalize(second))
-  })
-
-  it('distinguishes an entry-bearing class instance from a plain object with the same entries', () => {
-    // Regression guard for the round-1 finding, now travelling through the
-    // entries-first path rather than the devalue path.
-    class Point {
-      constructor(readonly x: number) {}
-    }
-    expect(canonicalize(new Point(1))).not.toBe(canonicalize({ x: 1 }))
-  })
-})
+import { defaultDedupId, resolveDedup } from '../../src/runtime/server/dedup'
 
 describe('defaultDedupId', () => {
+  it('is stable for an equal payload', () => {
+    expect(defaultDedupId('mail', { a: 1, b: 2 })).toBe(defaultDedupId('mail', { a: 1, b: 2 }))
+  })
+
+  it('differs for a different payload', () => {
+    // Paired with the case above deliberately: a function returning a constant
+    // satisfies "stable for an equal payload" perfectly.
+    expect(defaultDedupId('mail', { a: 1 })).not.toBe(defaultDedupId('mail', { a: 2 }))
+  })
+
   it('includes the job name, so two jobs with equal payloads do not collide', () => {
     expect(defaultDedupId('mail', { id: 1 })).not.toBe(defaultDedupId('report', { id: 1 }))
   })
 
-  it('is stable for the same job and logical payload', () => {
-    expect(defaultDedupId('mail', { a: 1, b: 2 })).toBe(defaultDedupId('mail', { b: 2, a: 1 }))
+  it('IS sensitive to object key order — an accepted, deliberate property', () => {
+    // Not a bug and not an oversight. The order-insensitive canonical form this
+    // replaced was attempted three times and abandoned; see the spec's "The
+    // dedup key" section. This test exists so the property cannot be silently
+    // "fixed" back into the design that failed. A caller who needs
+    // order-insensitivity supplies `uniqueId`.
+    expect(defaultDedupId('mail', { a: 1, b: 2 })).not.toBe(defaultDedupId('mail', { b: 2, a: 1 }))
+  })
+
+  it('distinguishes a value from its string form', () => {
+    expect(defaultDedupId('j', { a: 1 })).not.toBe(defaultDedupId('j', { a: '1' }))
+  })
+
+  it('distinguishes null from undefined', () => {
+    expect(defaultDedupId('j', { a: null })).not.toBe(defaultDedupId('j', { a: undefined }))
+  })
+
+  it('distinguishes two different Dates', () => {
+    const d = new Date('2026-08-14T00:00:00.000Z')
+    expect(defaultDedupId('j', d)).toBe(defaultDedupId('j', new Date(d.getTime())))
+    expect(defaultDedupId('j', d)).not.toBe(defaultDedupId('j', new Date(d.getTime() + 1)))
+  })
+
+  it('distinguishes two different RegExps', () => {
+    expect(defaultDedupId('j', /abc/)).not.toBe(defaultDedupId('j', /xyz/))
+    expect(defaultDedupId('j', /abc/g)).not.toBe(defaultDedupId('j', /abc/i))
+  })
+
+  it('distinguishes two different URLs', () => {
+    expect(defaultDedupId('j', new URL('http://a.example.com')))
+      .not.toBe(defaultDedupId('j', new URL('http://b.example.com')))
+  })
+
+  it('distinguishes a URL subclass carrying its own property, by href', () => {
+    // THE regression that killed the canonical form. Under the sorted-entries
+    // design both of these collapsed to one key — two different webhooks, one
+    // silently suppressed. devalue serializes a URL subclass by href, so the
+    // envelope distinguishes them for free.
+    class Webhook extends URL {
+      readonly retries: number
+      constructor(url: string, retries: number) {
+        super(url)
+        this.retries = retries
+      }
+    }
+    expect(defaultDedupId('j', new Webhook('http://a.example.com', 3)))
+      .not.toBe(defaultDedupId('j', new Webhook('http://b.example.com', 3)))
+  })
+
+  it('distinguishes Map contents and Set members', () => {
+    expect(defaultDedupId('j', new Map([['x', 1]]))).not.toBe(defaultDedupId('j', new Map([['x', 2]])))
+    expect(defaultDedupId('j', new Set([1]))).not.toBe(defaultDedupId('j', new Set([2])))
+  })
+
+  it('preserves array order, which is semantic', () => {
+    expect(defaultDedupId('j', [1, 2])).not.toBe(defaultDedupId('j', [2, 1]))
+  })
+
+  it('is stable for a cron job with no payload', () => {
+    expect(defaultDedupId('digest', undefined)).toBe(defaultDedupId('digest', undefined))
   })
 })
 
@@ -181,32 +85,41 @@ describe('resolveDedup', () => {
   })
 
   it('lock mode carries an id and no ttl', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: { a: 1 }, unique: {} })
-    expect(d).toEqual({ id: expect.any(String) })
+    expect(resolveDedup({ jobName: 'mail', payload: { a: 1 }, unique: {} }))
+      .toEqual({ id: expect.any(String) })
   })
 
   it('throttle mode carries the ttl and neither extend nor replace', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 60_000 } })
-    expect(d).toEqual({ id: expect.any(String), ttl: 60_000 })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 60_000 } }))
+      .toEqual({ id: expect.any(String), ttl: 60_000 })
   })
 
   it('debounce mode sets extend and replace alongside the ttl', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 5_000, debounce: true } })
-    expect(d).toEqual({ id: expect.any(String), ttl: 5_000, extend: true, replace: true })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 5_000, debounce: true } }))
+      .toEqual({ id: expect.any(String), ttl: 5_000, extend: true, replace: true })
+  })
+
+  it('ignores debounce without a ttl', () => {
+    // `extend`/`replace` with no expiry is BullMQ's replace-with-no-expiry
+    // branch — a lock that keeps moving, not a debounce window. `defineJob`
+    // rejects this combination at definition time (Task 4), so this asserts the
+    // resolver degrades safely rather than emitting a mode nobody asked for.
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { debounce: true } }))
+      .toEqual({ id: expect.any(String) })
   })
 
   it('prefers a user-supplied uniqueId over the default', () => {
-    const d = resolveDedup({
+    expect(resolveDedup({
       jobName: 'mail',
       payload: { id: 7 },
       unique: {},
       uniqueId: (p: { id: number }) => `invoice:${p.id}`,
-    })
-    expect(d?.id).toBe('mail:invoice:7')
+    })?.id).toBe('mail:invoice:7')
   })
 
   it('namespaces a user-supplied uniqueId by job name', () => {
-    // Two jobs whose uniqueId functions both return "1" must not collide.
+    // Two jobs whose uniqueId functions both return "1" must not collide — a
+    // cross-job interaction nobody could predict from reading either job.
     const a = resolveDedup({ jobName: 'mail', payload: {}, unique: {}, uniqueId: () => '1' })
     const b = resolveDedup({ jobName: 'report', payload: {}, unique: {}, uniqueId: () => '1' })
     expect(a?.id).not.toBe(b?.id)
