@@ -80,28 +80,32 @@ export default defineNuxtModule<ModuleOptions>({
       // at the /_concierge baseURL itself was tried first and confirmed by
       // direct experiment to shadow every sibling server route under that
       // prefix — /_concierge/health returned 404 once this hook ran, and the
-      // same would have happened to every /_concierge/api/** route the next
-      // three tasks add. This is the fallback the spec named for exactly
-      // this outcome. /_concierge/health and /_concierge/api/** stay ordinary
-      // server routes with nothing shadowing them.
+      // same happens to every /_concierge/api/** route below. This is the
+      // fallback the spec named for exactly this outcome. /_concierge/health
+      // and /_concierge/api/** stay ordinary server routes with nothing
+      // shadowing them.
       nuxt.hook("nitro:config", (nitroConfig) => {
         nitroConfig.publicAssets ||= [];
         nitroConfig.publicAssets.push({ dir: clientDir, baseURL: "/_concierge/ui", maxAge: 0 });
       });
 
-      // Tasks 8-10 populate this as their handler files land. Registering a
-      // route against a handler file that doesn't exist yet would break the
-      // build, so the loop starts empty rather than pointing at nothing.
-      const API_HANDLERS: Record<string, string> = {
-        "/_concierge/api/overview": "./runtime/server/routes/api/overview",
-        "/_concierge/api/queues/:queue/jobs": "./runtime/server/routes/api/jobs-list",
-        "/_concierge/api/queues/:queue/jobs/:id": "./runtime/server/routes/api/jobs-detail",
-        "/_concierge/api/queues/:queue/jobs/:id/retry": "./runtime/server/routes/api/jobs-retry",
-        "/_concierge/api/registry": "./runtime/server/routes/api/registry",
+      // Every dashboard API route. `method` is `get` for every plain read and
+      // `post` for the one route with a side effect (`jobs-retry`) — a dev
+      // server is reachable from any page a developer happens to visit, so
+      // without a method constraint a bare `GET` to the retry route would
+      // perform the retry too. The four reads have no side effect either way,
+      // but are constrained anyway so the route's contract matches what it
+      // actually does rather than accepting anything.
+      const API_HANDLERS: Record<string, { handler: string; method: "get" | "post" }> = {
+        "/_concierge/api/overview": { handler: "./runtime/server/routes/api/overview", method: "get" },
+        "/_concierge/api/queues/:queue/jobs": { handler: "./runtime/server/routes/api/jobs-list", method: "get" },
+        "/_concierge/api/queues/:queue/jobs/:id": { handler: "./runtime/server/routes/api/jobs-detail", method: "get" },
+        "/_concierge/api/queues/:queue/jobs/:id/retry": { handler: "./runtime/server/routes/api/jobs-retry", method: "post" },
+        "/_concierge/api/registry": { handler: "./runtime/server/routes/api/registry", method: "get" },
       };
 
-      for (const [route, handlerFile] of Object.entries(API_HANDLERS)) {
-        addServerHandler({ route, handler: resolve(handlerFile) });
+      for (const [route, { handler, method }] of Object.entries(API_HANDLERS)) {
+        addServerHandler({ route, handler: resolve(handler), method });
       }
 
       // Dev-only, and it must STAY dev-only: these are absolute build-machine
@@ -168,8 +172,9 @@ export default defineNuxtModule<ModuleOptions>({
     // The preset a user configures explicitly (nuxt.options.nitro.preset) is
     // not the same thing as the preset nitro actually resolves: serverless
     // targets (Vercel/Netlify/Cloudflare) are usually auto-detected, so the
-    // user-supplied value is undefined in exactly the case Task 11's
-    // serverless guardrail must catch. nitro.options.preset is only known
+    // user-supplied value is undefined in exactly the case the serverless
+    // guardrail in checkGuardrails (src/runtime/server/guardrails.ts) must
+    // catch. nitro.options.preset is only known
     // once nitro itself has finished resolving it, which is after this
     // setup() function returns — hence the nitro:init hook rather than
     // reading it here.

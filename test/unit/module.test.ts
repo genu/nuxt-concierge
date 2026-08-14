@@ -113,14 +113,14 @@ const makeNuxt = (dev: boolean) => {
   }
 }
 
-const handlers: Array<{ route?: string, middleware?: boolean }> = []
+const handlers: Array<{ route?: string, middleware?: boolean, method?: string }> = []
 const customTabs: unknown[] = []
 
 vi.mock('@nuxt/kit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@nuxt/kit')>()
   return {
     ...actual,
-    addServerHandler: vi.fn((h: { route?: string, middleware?: boolean }) => { handlers.push(h) }),
+    addServerHandler: vi.fn((h: { route?: string, middleware?: boolean, method?: string }) => { handlers.push(h) }),
     addServerPlugin: vi.fn(),
     useLogger: () => ({ success: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   }
@@ -159,6 +159,16 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
         }),
       ]),
     )
+
+    // The tab's iframe `src` is the ONLY consumer of the publicAssets
+    // baseURL above — nothing else in the runtime reads it. A regression
+    // to a bare `/_concierge/` here (shadowing every sibling server route,
+    // see the test below) would 404 into a blank iframe, detectable only in
+    // a browser, which this branch has never used. Asserted against the
+    // SAME test that already asserts the baseURL, so the two cannot drift
+    // apart without a failing test.
+    const [tab] = customTabs as Array<{ view: { src: string } }>
+    expect(tab?.view.src).toBe('/_concierge/ui/')
   })
 
   it('registers the client publicAssets under /_concierge/ui, NOT bare /_concierge, so it cannot shadow sibling server routes', async () => {
@@ -252,9 +262,26 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
 
     expect(handlers.some(h => h.route === '/_concierge/health')).toBe(true)
 
-    // The overview endpoint (Task 8) is the first entry in API_HANDLERS — it
-    // must actually be registered in dev, not merely present in the map.
+    // The overview endpoint is the first entry in API_HANDLERS — it must
+    // actually be registered in dev, not merely present in the map.
     expect(handlers.some(h => h.route?.startsWith('/_concierge/api'))).toBe(true)
+  })
+
+  it('constrains the retry route to POST and every other API route to GET', async () => {
+    const nuxt = makeNuxt(true)
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    // A dev server is reachable from any page a developer happens to visit —
+    // without this, `GET /_concierge/api/queues/:q/jobs/:id/retry` would
+    // perform the retry, a side effect landing from a plain navigation.
+    const retry = handlers.find(h => h.route === '/_concierge/api/queues/:queue/jobs/:id/retry')
+    expect(retry?.method).toBe('post')
+
+    const reads = handlers.filter(h =>
+      h.route?.startsWith('/_concierge/api') && h.route !== '/_concierge/api/queues/:queue/jobs/:id/retry',
+    )
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads.every(h => h.method === 'get')).toBe(true)
   })
 
   it('no longer registers the bull-board routes or transpiles its packages', async () => {
