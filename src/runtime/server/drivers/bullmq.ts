@@ -6,7 +6,7 @@ import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
 import type { BullmqOptions } from '../../../options'
-import type { ConciergeDriver, Consumer, EnqueueOptions, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, EnqueueOptions, JobState, JobSummary, ScheduleSummary } from './types'
 import type { CreateDriverOptions } from './index'
 
 /** Matches memory.ts so log output from either driver is tagged the same way. */
@@ -157,6 +157,64 @@ export const bullmqAddOptions = (job: EnqueueOptions): JobsOptions => ({
   removeOnFail: { count: 5000 },
 })
 
+/**
+ * Projects BullMQ's `JobSchedulerJson` onto the canonical summary.
+ *
+ * There is deliberately no `last` field: `JobSchedulerJson` in 5.63.0 exposes
+ * `key`, `name`, `id`, `iterationCount`, `limit`, `startDate`, `endDate`, `tz`,
+ * `pattern`, `every`, `next`, `offset` and `template` — and no previous-fire
+ * time. `RepeatOptions.prevMillis` is marked internal and is not returned.
+ */
+export const schedulerToSummary = (
+  json: { key: string, name: string, pattern?: string, tz?: string, next?: number, iterationCount?: number },
+  queue: string,
+): ScheduleSummary => ({
+  id: json.key,
+  jobName: json.name,
+  queue,
+  expression: json.pattern ?? '',
+  // BullMQ omits tz for a schedule created without one; that means UTC, and
+  // saying so beats rendering a blank column that reads as "unknown".
+  tz: json.tz ?? 'UTC',
+  next: json.next,
+  iterationCount: json.iterationCount,
+})
+
+/** The tick millis encoded in a scheduler-produced job id: `repeat:<id>:<millis>`. */
+const tickFromJobId = (id: string | undefined): number | undefined => {
+  const millis = Number(id?.slice(id.lastIndexOf(':') + 1))
+  return id?.startsWith('repeat:') && Number.isFinite(millis) && millis > 0 ? millis : undefined
+}
+
+/**
+ * Recovers a scheduled job's tick metadata, or `undefined` for an ordinary job.
+ *
+ * `repeatJobKey` is the detector: BullMQ sets it on every scheduler-produced
+ * job (`job-scheduler.js:120`) and on nothing else. The tick comes from
+ * `opts.prevMillis` when present, falling back to the millis encoded in the job
+ * id by `getSchedulerNextJobId` (`repeat:<schedulerId>:<nextMillis>`,
+ * `job-scheduler.js:220-222`). Both are read because `prevMillis` is documented
+ * as an internal property, and the id format is a public consequence of a
+ * documented method — neither is load-bearing alone.
+ *
+ * The tick is stable across a retry either way: BullMQ retries the same job
+ * record, so neither the id nor `prevMillis` changes.
+ */
+export const cronContextFromJob = (
+  job: { id?: string, repeatJobKey?: string, opts?: { prevMillis?: number, repeat?: { pattern?: string, tz?: string } } },
+): { tick: number, expression: string, tz: string } | undefined => {
+  if (!job.repeatJobKey) return undefined
+
+  const tick = job.opts?.prevMillis ?? tickFromJobId(job.id)
+  if (tick === undefined) return undefined
+
+  return {
+    tick,
+    expression: job.opts?.repeat?.pattern ?? '',
+    tz: job.opts?.repeat?.tz ?? 'UTC',
+  }
+}
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
   const bull = resolveBullmqOptions(opts.bullmq)
@@ -269,6 +327,28 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
       },
     },
 
+    schedule: {
+      upsert: async (queue, spec) => {
+        await queueOf(queue).upsertJobScheduler(
+          spec.id,
+          { pattern: spec.expression, tz: spec.tz },
+          // The job NAME must be the concierge job name, not the scheduler id:
+          // `registerHandler` keys handlers by queue+name, so a scheduler
+          // producing jobs under its own id would produce jobs no handler
+          // matches — which fails on every tick, permanently, exactly like the
+          // v1 defect this spec exists to not repeat.
+          { name: spec.jobName, data: encodePayload(spec.payload) },
+        )
+      },
+
+      list: async (queue) => {
+        const found = await queueOf(queue).getJobSchedulers()
+        return found.map(j => schedulerToSummary(j, queue))
+      },
+
+      remove: async (queue, id) => { await queueOf(queue).removeJobScheduler(id) },
+    },
+
     init: async () => { client() },
     isHealthy: health.isHealthy,
 
@@ -351,6 +431,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
               queue,
               attempt: job.attemptsMade + 1,
               payload: decodePayload(job.data),
+              cron: cronContextFromJob(job),
             })
           }
           catch (error) {
