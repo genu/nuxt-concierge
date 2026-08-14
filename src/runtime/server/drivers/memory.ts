@@ -32,7 +32,7 @@ interface QueuedJob {
  * `attemptsMade` is mutated across several call sites and a Lua script.
  * Probed with attempts=4, backoff delay=200: gaps came back ~226/411/824ms,
  * confirming retry k waits `2 ** (k - 1) * delay` (not `2 ** k`). See the
- * probe in the spec 3 plan, Task 11 Step 1.
+ * retry-backoff probe recorded in specs/2026-08-13-spec3-decisions.md.
  *
  * Exported so the formula is testable without a scheduler, and so the shared
  * conformance table can assert on it directly.

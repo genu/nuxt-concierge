@@ -33,9 +33,9 @@ describe('the built dashboard client', () => {
 
   it('references only relative asset paths', () => {
     const html = readFileSync(resolve(DIST, 'index.html'), 'utf8')
-    // Served from /_concierge/ as public assets, so absolute /assets/... paths
-    // would resolve against the HOST app's root and 404. This is the failure
-    // that presents as a blank panel with no server error.
+    // Served from /_concierge/ui/ as public assets, so absolute /assets/...
+    // paths would resolve against the HOST app's root and 404. This is the
+    // failure that presents as a blank panel with no server error.
     expect(html).not.toMatch(/(src|href)="\//)
     expect(html).toMatch(/(src|href)="\.\//)
   })
@@ -49,9 +49,10 @@ describe('the built dashboard client', () => {
     // 391,841 bytes (.js + .css) on 2026-08-14 with only the placeholder
     // shell (@nuxt/ui 4.10.0, vue 3.5.41, tailwindcss 4.3.3, vite 8.2.1).
     // Re-measured at 583,410 bytes on 2026-08-14, same dependency versions,
-    // after Task 11 added the three real panels (UTabs, USelect, USlideover,
-    // UBadge and their usage pulled in more of @nuxt/ui's runtime than the
-    // shell alone did). 820,000 is ~1.4x the new measurement — the same
+    // after the SPA's three real panels (Overview/Jobs/Registry) were added
+    // (UTabs, USelect, USlideover, UBadge and their usage pulled in more of
+    // @nuxt/ui's runtime than the shell alone did). 820,000 is ~1.4x the new
+    // measurement — the same
     // margin the original ceiling used — so a dependency bump that doubles
     // the bundle still fails CI rather than arriving silently in a
     // consumer's node_modules.

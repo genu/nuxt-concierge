@@ -10,9 +10,9 @@ export default defineConfig({
     // removes the need for an SPA history fallback on the static route.
     ui({ router: false }),
   ],
-  // Relative, NOT '/'. The bundle is served from /_concierge/ as Nitro public
-  // assets; absolute asset paths would resolve against the host app's root and
-  // 404, which presents as a blank panel with no server-side error.
+  // Relative, NOT '/'. The bundle is served from /_concierge/ui/ as Nitro
+  // public assets; absolute asset paths would resolve against the host app's
+  // root and 404, which presents as a blank panel with no server-side error.
   base: './',
   build: {
     outDir: '../dist/client',

@@ -45,8 +45,9 @@ const importFiles = (files: string[], prefix: string = "file") =>
  *    off the async work as an inner IIFE, captures the resulting promise as
  *    `ready`, and calls `installShutdown(nitroApp, ready)` synchronously
  *    immediately after — all before nitro's loop ever has a chance to move
- *    on to the next plugin. Task 9's close hook receives `ready` (a
- *    Promise<Supervisor>, not a Supervisor) and awaits it before draining.
+ *    on to the next plugin. `installShutdown`'s close hook (see shutdown.ts)
+ *    receives `ready` (a Promise<Supervisor>, not a Supervisor) and awaits it
+ *    before draining.
  *
  * A rejected `ready` is also made fatal: nitro's plugin loop only try/catches
  * SYNCHRONOUS throws, so an unhandled async rejection here would otherwise
@@ -313,11 +314,11 @@ export const createTemplateType = (jobs: ScannedJob[] = []) => {
 
   const jobMap = buildJobMapDeclaration(jobs);
 
-  // Both declarations go into BOTH graphs. See the Task 4 note: nitro's
-  // generated `nitro-routes.d.ts` references every server route handler to
-  // type $fetch, which pulls those handlers into the APP program — so a route
-  // that imports `#concierge` fails with TS2307 there unless the app graph
-  // has the declaration too.
+  // Both declarations go into BOTH graphs. See the note on
+  // `createTemplateInternalTypes` below: nitro's generated `nitro-routes.d.ts`
+  // references every server route handler to type $fetch, which pulls those
+  // handlers into the APP program — so a route that imports `#concierge`
+  // fails with TS2307 there unless the app graph has the declaration too.
   //
   // The cost, accepted deliberately: client code now typechecks against
   // these ambient declarations too, so `import { useQueue } from '#concierge'`
@@ -361,21 +362,22 @@ export const createTemplateType = (jobs: ScannedJob[] = []) => {
 
 /**
  * Declares the `#concierge/*` aliases that `nitro:config` registers (see
- * `createTemplateType` below). Those aliases resolve at BUILD time but are
+ * `createTemplateType` above). Those aliases resolve at BUILD time but are
  * invisible to TypeScript on their own — a server route file importing one
  * directly needs the app-graph declaration below, not just the nitro one.
- * The bull-board `ui-handler.ts` route (deleted in Task 7, replaced by the
- * dashboard's own routes under `routes/api/`) hit exactly this as a TS2307
- * error on its `#concierge/supervisor` import, which is what proved the need
- * for dual emission below.
+ * The bull-board `ui-handler.ts` route (removed when bull-board was replaced
+ * by the dashboard's own routes under `routes/api/`) hit exactly this as a
+ * TS2307 error on its `#concierge/supervisor` import, which is what proved
+ * the need for dual emission below.
  *
  * Emitted into BOTH the nitro graph AND the app graph. A registered server
  * ROUTE (see `src/module.ts`'s `addServerHandler` calls) that imports one of
  * these aliases has its whole import graph dragged into the APP program too
  * — `nitro-routes.d.ts` references the route (to type its response), and
  * that reference is what pulls it in, the same way it does for `#concierge`
- * (see Task 4). A nitro-only declaration (`{ nitro: true }`) would therefore
- * be invisible to the exact program that `pnpm typecheck` (`vue-tsc` via the
+ * (see the note on `createTemplateType` above). A nitro-only declaration
+ * (`{ nitro: true }`) would therefore be invisible to the exact program that
+ * `pnpm typecheck` (`vue-tsc` via the
  * app tsconfig) checks. Confirmed by direct experiment against `ui-handler.ts`
  * at the time, not assumption. None of the dashboard's current routes import
  * these aliases directly (they use relative imports instead), but that does

@@ -62,7 +62,7 @@ export interface Supervisor {
   startConsumers: () => Promise<void>
   /**
    * Stops the heartbeat interval without touching consumers or the driver.
-   * Idempotent. Shutdown (Task 9) calls this before deregistering: a tick
+   * Idempotent. Shutdown (`src/runtime/server/shutdown.ts`) calls this before deregistering: a tick
    * landing between `deregister()` resolving and `driver.close()` would
    * otherwise re-write the worker record with a fresh TTL, leaving a
    * phantom worker in the registry after the process is already gone.

@@ -329,9 +329,14 @@ was previously wrong whenever port 3000 was taken).
 
 It shows, per queue: live counts by state (waiting/active/completed/failed/delayed), the
 worker processes currently attached (with a staleness flag once a heartbeat falls behind
-`heartbeatTtl`), a paginated job list per state with decoded payloads, and the job registry
-(every discovered job, its queue, its schema vendor if any, and its effective
-attempts/backoff, plus the generated job-map `.d.ts`).
+`heartbeatTtl`), a job list per state with decoded payloads, and the job registry (every
+discovered job, its queue, its schema vendor if any, and its effective attempts/backoff,
+plus the generated job-map `.d.ts`).
+
+The job list shows only the first page (25 jobs) per state — the SPA has no pagination
+control yet. The `/_concierge/api/queues/:queue/jobs` endpoint itself already accepts
+`offset`/`limit` query parameters (up to 100 per page); a paging control in the dashboard
+is a follow-up, not something this endpoint is missing.
 
 **Retry is the only write action the dashboard performs.** Everything else is read-only
 introspection. Retry re-queues a single failed job by ID; it does not delete, requeue in

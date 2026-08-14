@@ -74,6 +74,14 @@ jobs:
       # not.
       - run: pnpm typecheck:tests
 
+      # The dashboard SPA (client/) is its own Vite/vue-tsc program, outside
+      # every other typecheck script above: `typecheck` only walks the
+      # playground, `typecheck:public`/`typecheck:tests` only walk test/.
+      # `vite build` transpiles without checking types, so without this a
+      # type error in a panel ships silently and presents as a blank panel —
+      # the one client-facing surface this spec has zero browser tests for.
+      - run: pnpm typecheck:client
+
       - run: pnpm test
         env:
           # The retry conformance table runs its bullmq half only when a real
