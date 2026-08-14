@@ -257,10 +257,16 @@ For each queue in `config.worker.queues`:
 2. `upsert` each one. Idempotent; a changed expression reuses the id and updates in place rather
    than orphaning.
 3. `list` the queue's existing schedulers.
-4. `remove` every listed scheduler whose id is not in the declared set.
+4. `remove` every listed scheduler that is **concierge-owned** and not in the declared set.
 
-The scheduler id is derived from the job name, which build-time `duplicate-name` validation
-already guarantees unique.
+The scheduler id is `concierge:<jobName>` — the job name, which build-time `duplicate-name`
+validation already guarantees unique, under a fixed namespace prefix.
+
+**The prefix is what makes the sweep safe to run on a queue this module does not exclusively own.**
+Pruning by "not in the declared set" alone would delete unrelated BullMQ repeatable jobs on the
+same queue the first time a worker boots — which would make adopting concierge destructive to
+whatever was already there. The ownership check runs before the declared-set check, so a foreign
+scheduler is never a removal candidate at all.
 
 **The sweep must prune against the declared set for that queue, computed from the full scanned job
 list — never from the subset of jobs this instance happens to handle.** Codegen emits every job to
