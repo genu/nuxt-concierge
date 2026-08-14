@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "noEmit": true,
+    "types": ["vite/client"],
+    // Without this, a real typecheck (vue-tsc --noEmit) walks .d.ts files
+    // transitively reachable through @nuxt/ui's dependency graph (nitropack
+    // presets, unstorage drivers, framer-motion, react types, etc.) — none of
+    // which this standalone SPA touches — and fails on errors in code this
+    // project never imports.
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts"]
+}

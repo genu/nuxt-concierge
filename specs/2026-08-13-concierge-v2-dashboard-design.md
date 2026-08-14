@@ -374,9 +374,10 @@ cannot inherit its theme. Both halves of that are accepted.
 Nor is the `dev:prepare` change — without it, a fresh clone's first `pnpm dev` serves a 404 at
 the DevTools tab, which reads as a broken module rather than a missing build step.
 
-CI gains the client build plus a bundle-size check. **The ceiling is set from the first real
-measurement and recorded in the implementation plan, not invented here.** "The queue module added
-800 KB to your `node_modules`" is a fair complaint, and the honest way to bound it is to measure
+CI gains the client build plus a bundle-size check. **The ceiling is 550,000 bytes, set from the
+first real measurement (391,841 bytes of `.js` + `.css` on 2026-08-14) with a ~1.4x margin, not
+invented here.** "The queue module added 800 KB to your `node_modules`" is a fair complaint, and
+the honest way to bound it is to measure
 the shell once it builds and then fail CI on regression.
 
 ### The DevTools tab

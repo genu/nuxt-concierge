@@ -28,10 +28,12 @@
     "access": "public"
   },
   "scripts": {
-    "prepack": "nuxt-module-build build",
+    "build:client": "pnpm --filter @nuxt-concierge/client build",
+    "dev:client": "pnpm --filter @nuxt-concierge/client dev",
+    "prepack": "nuxt-module-build build && pnpm build:client",
     "dev": "nuxi dev playground",
     "dev:build": "nuxi build playground",
-    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground && pnpm build:client",
     "docs:build": "nuxi generate docs",
     "docs:preview": "nuxi preview docs",
     "docs:dev": "nuxi dev docs",
