@@ -64,7 +64,7 @@ export const createMemoryDriver = (): ConciergeDriver => {
 
   return {
     name: 'memory',
-    capabilities: { persistent: false, crossProcess: false },
+    capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
 
     init: async () => {},
     isHealthy: () => true,

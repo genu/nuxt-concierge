@@ -5,7 +5,7 @@ describe('sync driver', () => {
   it('reports its capabilities honestly', () => {
     const d = createSyncDriver()
     expect(d.name).toBe('sync')
-    expect(d.capabilities).toEqual({ persistent: false, crossProcess: false })
+    expect(d.capabilities).toEqual({ persistent: false, crossProcess: false, history: 'none' })
   })
 
   it('runs the handler inline during enqueue', async () => {

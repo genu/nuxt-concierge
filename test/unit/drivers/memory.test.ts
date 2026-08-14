@@ -38,7 +38,7 @@ afterEach(async () => {
 
 describe('memory driver', () => {
   it('reports its capabilities honestly', () => {
-    expect(createMemoryDriver().capabilities).toEqual({ persistent: false, crossProcess: false })
+    expect(createMemoryDriver().capabilities).toEqual({ persistent: false, crossProcess: false, history: 'bounded' })
   })
 
   it('processes an enqueued job through a consumer', async () => {

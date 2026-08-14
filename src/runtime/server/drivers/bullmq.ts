@@ -118,7 +118,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
 
   return {
     name: 'bullmq',
-    capabilities: { persistent: true, crossProcess: true },
+    capabilities: { persistent: true, crossProcess: true, history: 'durable' },
 
     init: async () => { client() },
     isHealthy: health.isHealthy,
