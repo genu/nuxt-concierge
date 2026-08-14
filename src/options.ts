@@ -92,8 +92,6 @@ export interface ModuleOptions {
     attempts?: number
     backoff?: Partial<BackoffOptions>
   }
-  /** BullBoard dashboard. Unchanged in phase 1; replaced in spec 4. */
-  managementUI?: boolean
 }
 
 /**
@@ -109,7 +107,6 @@ export interface ResolvedConciergeOptions {
   bullmq: BullmqOptions
   memory: MemoryOptions
   defaults: JobDefaults
-  managementUI?: boolean
 }
 
 export const moduleDefaults: ResolvedConciergeOptions = {
@@ -133,7 +130,6 @@ export const moduleDefaults: ResolvedConciergeOptions = {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 },
   },
-  managementUI: process.env.NODE_ENV === 'development',
 }
 
 export const resolveModuleOptions = (options: ModuleOptions): ResolvedConciergeOptions => {

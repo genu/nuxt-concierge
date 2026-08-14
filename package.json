@@ -60,9 +60,7 @@
     }
   },
   "dependencies": {
-    "@bull-board/api": "6.14.0",
-    "@bull-board/h3": "6.14.0",
-    "@bull-board/ui": "6.14.0",
+    "@nuxt/devtools-kit": "3.4.1",
     "@nuxt/kit": "4.5.2",
     "@standard-schema/spec": "1.1.0",
     "bullmq": "5.63.0",

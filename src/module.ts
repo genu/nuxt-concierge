@@ -6,13 +6,8 @@ import {
   addServerPlugin,
   addServerHandler,
 } from "@nuxt/kit";
+import { addCustomTab } from "@nuxt/devtools-kit";
 import defu from "defu";
-import {
-  withTrailingSlash,
-  withoutTrailingSlash,
-  cleanDoubleSlashes,
-  joinURL,
-} from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { scanJobs } from "./scan";
 import {
@@ -45,17 +40,6 @@ export default defineNuxtModule<ModuleOptions>({
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
 
-    // Add Server handlers for UI
-    addServerHandler({
-      route: "/_concierge",
-      handler: resolve("./runtime/server/routes/ui-handler"),
-    });
-
-    addServerHandler({
-      route: "/_concierge/**",
-      handler: resolve("./runtime/server/routes/ui-handler"),
-    });
-
     addServerHandler({
       route: "/_concierge/health",
       handler: resolve("./runtime/server/routes/health"),
@@ -84,10 +68,35 @@ export default defineNuxtModule<ModuleOptions>({
       logger.success(`Discovered ${plural("job", jobs.length)}`);
     }
 
-    // Transpile BullBoard api because its not ESM
-    nuxt.options.build.transpile.push("@bull-board/api");
-    nuxt.options.build.transpile.push("@bull-board/h3");
-    nuxt.options.build.transpile.push("@bull-board/ui");
+    // Everything below is DEV-ONLY, gated at registration time rather than by a
+    // runtime flag. `managementUI` used to make this a config key a user could
+    // flip on in production, where /_concierge sat behind nothing but the
+    // worker-role gate — a queue dashboard with a retry button and no auth
+    // should not be one option away.
+    if (nuxt.options.dev) {
+      const clientDir = resolve("../dist/client");
+
+      nuxt.hook("nitro:config", (nitroConfig) => {
+        nitroConfig.publicAssets ||= [];
+        nitroConfig.publicAssets.push({ dir: clientDir, baseURL: "/_concierge", maxAge: 0 });
+      });
+
+      // Tasks 8-10 populate this as their handler files land. Registering a
+      // route against a handler file that doesn't exist yet would break the
+      // build, so the loop starts empty rather than pointing at nothing.
+      const API_HANDLERS: Record<string, string> = {};
+
+      for (const [route, handlerFile] of Object.entries(API_HANDLERS)) {
+        addServerHandler({ route, handler: resolve(handlerFile) });
+      }
+
+      addCustomTab({
+        name: "concierge",
+        title: "Concierge",
+        icon: "carbon:queued",
+        view: { type: "iframe", src: "/_concierge/" },
+      });
+    }
 
     const resolved = resolveModuleOptions(options);
 
@@ -152,11 +161,11 @@ export default defineNuxtModule<ModuleOptions>({
     logger.info(`Role: ${role}`);
 
     if (nuxt.options.dev) {
-      const viewerUrl = `${cleanDoubleSlashes(
-        joinURL(withoutTrailingSlash(nuxt.options.devServer.url), "_concierge")
-      )}`;
-
-      logger.info(`Concierge Dashboard: ${withTrailingSlash(viewerUrl)}`);
+      // No URL, which is how #24 is fixed: setup() runs BEFORE the server
+      // listens, so nuxt.options.devServer.url is not yet correct here — it
+      // logged port 3000 whenever 3000 was taken. Pointing at the DevTools tab
+      // leaves no port to get wrong.
+      logger.info("Concierge dashboard: open the Concierge tab in Nuxt DevTools");
     }
   },
 });

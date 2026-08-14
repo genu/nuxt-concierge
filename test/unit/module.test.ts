@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Nuxt } from '@nuxt/schema'
+import { runWithNuxtContext } from '@nuxt/kit'
 import nuxtConciergeModule from '../../src/module'
 import { resolveModuleOptions } from '../../src/options'
 
@@ -58,5 +59,157 @@ describe('the module option resolution @nuxt/kit actually performs', () => {
     // second, competing set of defaults.
     const preMerged = await nuxtConciergeModule.getOptions!({}, fakeNuxt)
     expect(preMerged).toEqual({})
+  })
+})
+
+interface FakeNitroConfig {
+  publicAssets?: Array<{ dir: string, baseURL?: string, maxAge?: number }>
+}
+
+/**
+ * A fake Nuxt sufficient for setup() to run: the module's own kit calls are
+ * mocked below, so this records WHAT the module registers rather than
+ * booting Nuxt. `hook` records callbacks by name instead of being a no-op
+ * `vi.fn()`, so a test can later invoke the `nitro:config` callback the
+ * module registers and inspect what it mutated — the whole point of the
+ * `dev: false` half is proving that callback was never registered at all,
+ * which a no-op recorder could not distinguish from "registered but empty".
+ */
+const makeNuxt = (dev: boolean) => {
+  const hookCallbacks: Record<string, Array<(...args: never[]) => unknown>> = {}
+
+  return {
+    // The module declares `meta.compatibility`, so calling it directly (it
+    // is itself the callable `setup`, per @nuxt/kit's `NuxtModule` type —
+    // see the comment at each call site below) runs
+    // `checkNuxtCompatibility`, which reads `nuxt._version`. Omitting it
+    // throws `NUXT_B8005` before `setup()` itself ever runs.
+    _version: '4.5.2',
+    options: {
+      dev,
+      rootDir: process.cwd(),
+      buildDir: `${process.cwd()}/.nuxt`,
+      // `templates`/`vite.vue` are read by @nuxt/kit's real (unmocked)
+      // `addTemplate`/`addTypeTemplate` — `createTemplateNuxtPlugin` and
+      // `createTemplateInternalTypes`, both called before the dashboard
+      // block in `setup()`, exercise them for real rather than being mocked.
+      build: { transpile: [] as string[], templates: [] as unknown[] },
+      vite: { vue: {} as Record<string, unknown> },
+      runtimeConfig: {} as Record<string, unknown>,
+      devServer: { url: 'http://localhost:3000' },
+      nitro: {} as FakeNitroConfig,
+    },
+    hook: vi.fn((name: string, cb: (...args: never[]) => unknown) => {
+      hookCallbacks[name] ??= []
+      hookCallbacks[name].push(cb)
+    }),
+    hooks: { hook: vi.fn() },
+    // Not part of the real Nuxt interface — a test-only escape hatch to run
+    // whatever the module registered under a given hook name, the way Nitro
+    // itself would when it actually reaches that phase.
+    async callHook(name: string, ...args: never[]) {
+      for (const cb of hookCallbacks[name] ?? []) await cb(...args)
+    },
+  }
+}
+
+const handlers: Array<{ route?: string, middleware?: boolean }> = []
+const customTabs: unknown[] = []
+
+vi.mock('@nuxt/kit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nuxt/kit')>()
+  return {
+    ...actual,
+    addServerHandler: vi.fn((h: { route?: string, middleware?: boolean }) => { handlers.push(h) }),
+    addServerPlugin: vi.fn(),
+    useLogger: () => ({ success: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+  }
+})
+
+vi.mock('@nuxt/devtools-kit', () => ({
+  addCustomTab: vi.fn((tab: unknown) => { customTabs.push(tab) }),
+}))
+
+describe('dashboard registration is gated on nuxt.options.dev at build time', () => {
+  beforeEach(() => {
+    handlers.length = 0
+    customTabs.length = 0
+  })
+
+  it('registers the DevTools tab and the client publicAssets dir in dev', async () => {
+    const nuxt = makeNuxt(true)
+    // The exported module is itself the callable `setup` (a NuxtModule),
+    // not an object with a `.setup` member — `nuxtConciergeModule.setup` is
+    // undefined at runtime, so it is called directly here. Wrapped in
+    // `runWithNuxtContext` because `scanJobs()` (called early in `setup()`)
+    // reads `useNuxt()`, which is otherwise unavailable outside a real Nuxt
+    // instance's module-loading context.
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    expect(customTabs).toHaveLength(1)
+
+    const nitroConfig: FakeNitroConfig = {}
+    await nuxt.callHook('nitro:config', nitroConfig as never)
+
+    expect(nitroConfig.publicAssets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          baseURL: '/_concierge',
+          dir: expect.stringContaining('dist/client'),
+        }),
+      ]),
+    )
+  })
+
+  it('registers NEITHER the tab NOR the publicAssets entry outside dev, while keeping health', async () => {
+    const nuxt = makeNuxt(false)
+    // The exported module is itself the callable `setup` (a NuxtModule),
+    // not an object with a `.setup` member — `nuxtConciergeModule.setup` is
+    // undefined at runtime, so it is called directly here. Wrapped in
+    // `runWithNuxtContext` because `scanJobs()` (called early in `setup()`)
+    // reads `useNuxt()`, which is otherwise unavailable outside a real Nuxt
+    // instance's module-loading context.
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    // The half that matters. A dashboard reachable in production is what
+    // this spec's whole structure exists to prevent, and nothing else in
+    // this plan can see it.
+    expect(customTabs).toHaveLength(0)
+
+    const nitroConfig: FakeNitroConfig = {}
+    await nuxt.callHook('nitro:config', nitroConfig as never)
+    expect(nitroConfig.publicAssets).toBeUndefined()
+
+    // Health is NOT part of the dashboard — it is the production readiness
+    // probe (gated by role, not by dev) and must survive under both halves.
+    expect(handlers.some(h => h.route === '/_concierge/health')).toBe(true)
+  })
+
+  it('still registers the health route in dev', async () => {
+    const nuxt = makeNuxt(true)
+    // The exported module is itself the callable `setup` (a NuxtModule),
+    // not an object with a `.setup` member — `nuxtConciergeModule.setup` is
+    // undefined at runtime, so it is called directly here. Wrapped in
+    // `runWithNuxtContext` because `scanJobs()` (called early in `setup()`)
+    // reads `useNuxt()`, which is otherwise unavailable outside a real Nuxt
+    // instance's module-loading context.
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    expect(handlers.some(h => h.route === '/_concierge/health')).toBe(true)
+  })
+
+  it('no longer registers the bull-board routes or transpiles its packages', async () => {
+    const nuxt = makeNuxt(true)
+    // The exported module is itself the callable `setup` (a NuxtModule),
+    // not an object with a `.setup` member — `nuxtConciergeModule.setup` is
+    // undefined at runtime, so it is called directly here. Wrapped in
+    // `runWithNuxtContext` because `scanJobs()` (called early in `setup()`)
+    // reads `useNuxt()`, which is otherwise unavailable outside a real Nuxt
+    // instance's module-loading context.
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    expect(nuxt.options.build.transpile).toEqual([])
+    expect(handlers.some(h => h.route === '/_concierge')).toBe(false)
+    expect(handlers.some(h => h.route === '/_concierge/**')).toBe(false)
   })
 })
