@@ -390,12 +390,19 @@ cannot inherit its theme. Both halves of that are accepted.
 | ------ | ------ |
 | `build:client` | new — `pnpm --filter client build` |
 | `dev:client` | new — Vite dev server, proxying `/_concierge/api` to the running playground |
-| `prepack` | `pnpm build:client && nuxt-module-build build` |
-| `dev:prepare` | gains `pnpm build:client` |
+| `prepack` | `nuxt-module-build build && pnpm build:client` |
+| `dev:prepare` | gains `pnpm build:client`, appended LAST |
 
 `dev:client` is not optional polish: rebuilding `dist/client` to see a CSS change is unworkable.
 Nor is the `dev:prepare` change — without it, a fresh clone's first `pnpm dev` serves a 404 at
 the DevTools tab, which reads as a broken module rather than a missing build step.
+
+**`build:client` must run LAST in both `prepack` and `dev:prepare`, not first.**
+`nuxt-module-build` wraps unbuild, whose `clean: true` wipes the *entire* `dist/` directory —
+including `dist/client` — before it writes its own output. `pnpm build:client && nuxt-module-build
+build` (the order this table originally showed) builds the SPA and then immediately deletes it,
+publishing a tarball with no dashboard and no error to say so. Confirmed by direct experiment: see
+`2026-08-13-spec4-decisions.md`.
 
 CI gains the client build plus a bundle-size check. **The ceiling is 820,000 bytes, set from a real
 measurement, not invented here.** First measured at 391,841 bytes (`.js` + `.css`) on 2026-08-14
