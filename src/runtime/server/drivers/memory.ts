@@ -2,7 +2,7 @@ import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { MemoryOptions } from '../../../options'
 import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
-import type { ConciergeDriver, Consumer } from './types'
+import type { ConciergeDriver, Consumer, JobDetail, JobState, JobSummary } from './types'
 
 /** Exported so tests can spy on it instead of asserting on console output. */
 export const logger = consola.create({}).withTag('nuxt-concierge')
@@ -116,9 +116,156 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     while (bucket.length > historyLimit) bucket.shift()
   }
 
+  const toDetail = (record: TerminalRecord): JobDetail => ({
+    id: record.id,
+    name: record.name,
+    queue: record.queue,
+    state: record.state,
+    attemptsMade: record.attemptsMade,
+    attempts: record.attempts,
+    createdAt: record.createdAt,
+    finishedAt: record.finishedAt || undefined,
+    failedReason: record.failedReason,
+    stack: record.stack,
+    envelope: record.envelope,
+  })
+
+  const listByState = (queue: string, state: JobState): JobSummary[] => {
+    const now = Date.now()
+    if (state === 'completed' || state === 'failed') {
+      return historyOf(queue)
+        .filter(r => r.state === state)
+        .map(r => toDetail(r))
+    }
+    if (state === 'active') {
+      return [...inFlight.values()]
+        .filter(j => j.queue === queue)
+        .map(j => ({
+          id: j.jobId,
+          name: j.name,
+          queue,
+          state: 'active' as const,
+          attemptsMade: 0,
+          createdAt: j.startedAt,
+        }))
+    }
+    return queueOf(queue)
+      .filter(j => (state === 'waiting' ? j.runAt <= now : j.runAt > now))
+      .map(j => ({
+        id: j.id,
+        name: j.name,
+        queue,
+        state,
+        attemptsMade: j.attempt,
+        attempts: j.attempts,
+        createdAt: j.createdAt,
+      }))
+  }
+
   return {
     name: 'memory',
     capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
+
+    introspect: {
+      counts: async (queue) => {
+        const now = Date.now()
+        const q = queueOf(queue)
+        const terminal = historyOf(queue)
+        return {
+          waiting: q.filter(j => j.runAt <= now).length,
+          delayed: q.filter(j => j.runAt > now).length,
+          active: [...inFlight.values()].filter(j => j.queue === queue).length,
+          completed: terminal.filter(r => r.state === 'completed').length,
+          failed: terminal.filter(r => r.state === 'failed').length,
+        }
+      },
+
+      list: async (queue, state, page) => {
+        const all = listByState(queue, state)
+        return {
+          items: all.slice(page.offset, page.offset + page.limit),
+          // `total` is the FULL count, not the page length. The UI's paging
+          // control reads it; returning items.length would make every page
+          // look like the last one.
+          total: all.length,
+        }
+      },
+
+      get: async (queue, id) => {
+        const terminal = historyOf(queue).find(r => r.id === id)
+        if (terminal) return toDetail(terminal)
+
+        const queued = queueOf(queue).find(j => j.id === id)
+        if (queued) {
+          // State computed from runAt, NOT inherited from a shared record
+          // shape. An earlier draft of this plan routed a queued job through a
+          // `TerminalRecord` whose `state` field defaulted to 'completed',
+          // which would have reported every waiting job as completed — a job
+          // visible in the waiting list and simultaneously claiming to have
+          // finished.
+          return {
+            id: queued.id,
+            name: queued.name,
+            queue,
+            state: queued.runAt <= Date.now() ? 'waiting' : 'delayed',
+            attemptsMade: queued.attempt,
+            attempts: queued.attempts,
+            createdAt: queued.createdAt,
+            envelope: queued.envelope,
+          }
+        }
+
+        const running = inFlight.get(id)
+        if (running && running.queue === queue) {
+          const q = queueOf(queue).find(j => j.id === id)
+          // An active job is no longer in `pending` (the loop spliced it out),
+          // so there is no envelope to show. Reported as `active` with an
+          // undefined envelope rather than omitted, so the UI can render "this
+          // job is running" instead of "not found".
+          return {
+            id,
+            name: running.name,
+            queue,
+            state: 'active',
+            attemptsMade: q?.attempt ?? 0,
+            createdAt: running.startedAt,
+            envelope: undefined,
+          }
+        }
+
+        return undefined
+      },
+
+      retry: async (queue, id) => {
+        const bucket = historyOf(queue)
+        const idx = bucket.findIndex(r => r.id === id && r.state === 'failed')
+        if (idx === -1) {
+          throw new Error(
+            `[nuxt-concierge] no failed job "${id}" on queue "${queue}" to retry. `
+            + `The memory driver retains ${historyLimit} terminal records per queue, `
+            + `oldest evicted first, so it may already have been dropped.`,
+          )
+        }
+
+        // Removed from history as it is re-queued: leaving it would show the
+        // job as both failed and waiting, and a second click would enqueue a
+        // third copy.
+        const [record] = bucket.splice(idx, 1)
+        queueOf(queue).push({
+          id: record!.id,
+          name: record!.name,
+          queue,
+          envelope: record!.envelope,
+          // Reset so the retried job gets a full fresh allowance rather than
+          // landing immediately back in its exhausted terminal state.
+          attempt: 0,
+          runAt: Date.now(),
+          attempts: record!.attempts,
+          backoff: record!.backoff,
+          createdAt: record!.createdAt,
+        })
+      },
+    },
 
     init: async () => {},
     isHealthy: () => true,
