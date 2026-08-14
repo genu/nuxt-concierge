@@ -112,23 +112,33 @@ describe('memory driver deduplication — debounce mode', () => {
 
   it('re-arms the ttl when the debounce target is already running', async () => {
     // `extend` means "re-arm on each SUPPRESSED enqueue", and an enqueue
-    // suppressed while the target is ACTIVE is one. Before this was hoisted,
-    // the window lapsed and the next enqueue produced a second run.
+    // suppressed while the target is ACTIVE is one. Before the re-arm was
+    // hoisted out of the `replace` branch, the window lapsed and the next
+    // enqueue produced a second run.
+    //
+    // Timings are deliberately generous in BOTH directions rather than tight
+    // around the boundary. The suppressed enqueue lands at t≈800 with the
+    // original window closing at t=1000 (200ms of slack), and the final check
+    // lands at t≈1200 — 200ms past the ORIGINAL expiry, and 600ms before the
+    // re-armed one at t≈1800. A tighter version of this test failed on ~35ms
+    // of scheduler jitter with correct code, which is how a real regression
+    // ends up "fixed" by loosening the assertion.
     const driver = createMemoryDriver()
     driver.registerHandler('default', 'j', async () => {
-      await new Promise(r => setTimeout(r, 400))
+      await new Promise(r => setTimeout(r, 2_000))
     })
     driver.consume('default', { concurrency: 1 })
 
-    const dedup = { id: 'k', ttl: 150, extend: true, replace: true }
+    const dedup = { id: 'k', ttl: 1_000, extend: true, replace: true }
     await driver.enqueue('default', { name: 'j', payload: {}, dedup })
-    await new Promise(r => setTimeout(r, 60))
+    await new Promise(r => setTimeout(r, 800))
 
-    // Suppressed while the handler is mid-flight; this must re-arm the window.
+    // Suppressed while the handler is mid-flight; this must re-arm the window
+    // to t≈1800.
     expect((await driver.enqueue('default', { name: 'j', payload: {}, dedup })).deduplicated).toBe(true)
 
-    await new Promise(r => setTimeout(r, 120))
-    // Past the ORIGINAL 150ms expiry, inside the re-armed one.
+    await new Promise(r => setTimeout(r, 400))
+    // t≈1200: past the ORIGINAL 1000ms expiry, well inside the re-armed one.
     expect((await driver.enqueue('default', { name: 'j', payload: {}, dedup })).deduplicated).toBe(true)
 
     await driver.close(true)
