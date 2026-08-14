@@ -41,6 +41,29 @@ export interface WorkerRecord {
   active: ActiveJob[]
 }
 
+/**
+ * A schedule, fully resolved. `tz` is always present because resolution
+ * defaults it to UTC — never system-local, since a laptop and a container
+ * disagree and that disagreement surfaces as "the nightly job ran at the wrong
+ * hour in production only".
+ */
+export interface CronSpec {
+  expression: string
+  tz: string
+  payload?: unknown
+}
+
+/**
+ * Resolved deduplication policy. `unique: true` resolves to `{}` (lock mode);
+ * a TTL makes it a throttle; a TTL plus `debounce` makes it a debounce.
+ */
+export interface UniqueOptions {
+  /** Milliseconds. Absent means lock-until-finalized rather than a window. */
+  ttl?: number
+  /** Requires `ttl`. Coalesces a burst into one run after the quiet period. */
+  debounce?: boolean
+}
+
 /** What a handler receives. `Payload` is the schema OUTPUT when a job declares `input`. */
 export interface JobContext<Payload = unknown> {
   id: string
@@ -48,6 +71,15 @@ export interface JobContext<Payload = unknown> {
   queue: string
   attempt: number
   payload: Payload
+  /**
+   * Present only for a job produced by a schedule.
+   *
+   * `tick` is the SCHEDULED fire time, not the time the handler started — they
+   * differ by queue latency, and only the scheduled time is stable across a
+   * retry of the same tick. That stability is the entire point: it gives a
+   * handler a natural idempotency key for the at-least-once guarantee.
+   */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 export type JobHandler<Payload = unknown> = (ctx: JobContext<Payload>) => Promise<void> | void
@@ -80,6 +112,16 @@ export interface JobDefinition<In = unknown, Out = In> {
   /** TOTAL attempts including the first. Falls back to `concierge.defaults`. */
   attempts?: number
   backoff?: BackoffOptions
+  /** Resolved from the string shorthand or the object form. */
+  cron?: CronSpec
+  /** Resolved: `true` becomes `{}`. Absent means no deduplication. */
+  unique?: UniqueOptions
+  /**
+   * Producer-side. Must be PURE — an impure key does not fail loudly, it just
+   * stops deduplicating. Receives the ENQUEUE-side payload (schema input),
+   * because it runs before any transform.
+   */
+  uniqueId?: (payload: never) => string
   /**
    * Type-only carrier, never assigned at runtime and never read.
    *

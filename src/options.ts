@@ -43,6 +43,24 @@ export interface MemoryOptions {
   historyLimit: number
 }
 
+export interface CronOptions {
+  /**
+   * Master switch for every declared schedule.
+   *
+   * `false` does not skip reconciliation — it runs it with an EMPTY declared
+   * set, so the sweep removes every concierge-owned schedule on every declared
+   * queue and upserts none. "Off" has to mean off in Redis, not merely off in
+   * this process: skipping reconciliation entirely would leave stale schedulers
+   * live, producing jobs against a deployment that believes cron is disabled.
+   *
+   * This is a DEPLOYMENT-WIDE switch, not a per-instance one. An instance with
+   * it `false` will prune the schedules of an instance with it `true`, because
+   * neither knows about the other. Setting it inconsistently across a fleet
+   * makes schedules flap.
+   */
+  enabled: boolean
+}
+
 /** Retry policy applied to any job that does not declare its own. */
 export interface JobDefaults {
   /** TOTAL attempts including the first, matching BullMQ. */
@@ -92,6 +110,7 @@ export interface ModuleOptions {
     attempts?: number
     backoff?: Partial<BackoffOptions>
   }
+  cron?: Partial<CronOptions>
 }
 
 /**
@@ -107,6 +126,7 @@ export interface ResolvedConciergeOptions {
   bullmq: BullmqOptions
   memory: MemoryOptions
   defaults: JobDefaults
+  cron: CronOptions
   /** Dev-only, written by the module. Absolute paths; never present in production. */
   jobFiles?: Record<string, string>
   /** Dev-only, written by the module. Absolute path; never present in production. */
@@ -133,6 +153,9 @@ export const moduleDefaults: ResolvedConciergeOptions = {
   defaults: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 },
+  },
+  cron: {
+    enabled: true,
   },
 }
 

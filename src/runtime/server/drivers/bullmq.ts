@@ -295,7 +295,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         removeOnComplete: { count: 1000 },
         removeOnFail: { count: 5000 },
       })
-      return { id: String(added.id) }
+      return { id: String(added.id), deduplicated: false }
     },
 
     consume: (queue, consumeOpts, onJob): Consumer => {

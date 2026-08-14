@@ -44,6 +44,11 @@ export interface EnqueueOptions {
    * strategies.
    */
   backoff?: BackoffOptions
+  /**
+   * Resolved by `useQueue` from the job's own `unique`/`uniqueId`, never by a
+   * driver. Absent means "do not deduplicate this enqueue".
+   */
+  dedup?: DedupOptions
 }
 
 export interface ConsumeOptions {
@@ -115,6 +120,13 @@ export interface JobDetail extends JobSummary {
   stack?: string
   /** Driver-specific extras. Display-only; nothing branches on this. */
   raw?: Record<string, unknown>
+  /**
+   * First-class rather than a `raw` entry, because the shared conformance
+   * table asserts on it and `raw` is documented as driver-specific,
+   * display-only, and branched on by nothing. If a test asserts it, it does
+   * not belong in the escape hatch.
+   */
+  deduplicationId?: string
 }
 
 export interface DriverIntrospection {
@@ -142,6 +154,96 @@ export interface DriverIntrospection {
   retry: (queue: string, id: string) => Promise<void>
 }
 
+/**
+ * Mirrors BullMQ's `DeduplicationOptions` field-for-field and deliberately, so
+ * the bullmq driver passes it straight through. Any translation layer here is
+ * a place for a semantic drift to hide — the same reasoning that keeps
+ * `BackoffOptions` shaped like BullMQ's own.
+ *
+ * The three shapes that matter, verified against
+ * `bullmq/dist/esm/scripts/moveToFinished-14.js` in 5.63.0:
+ *
+ * - `{ id }`            LOCK. No expiry; the key is deleted when the job moves
+ *                       to completed OR terminally failed, so it spans queued
+ *                       and executing. An INTERMEDIATE failure does not release
+ *                       it (retries go through moveToDelayed, not moveToFinished).
+ * - `{ id, ttl }`       THROTTLE. On finalization `PTTL` is positive, so neither
+ *                       delete branch fires and the key survives to expiry.
+ * - `{ id, ttl, extend, replace }`
+ *                       DEBOUNCE. `extend` re-arms the TTL on each suppressed
+ *                       enqueue; `replace` supersedes the pending delayed job.
+ */
+export interface DedupOptions {
+  id: string
+  ttl?: number
+  extend?: boolean
+  replace?: boolean
+}
+
+export interface EnqueueResult {
+  id: string
+  /**
+   * True when this call was SUPPRESSED and `id` refers to the pre-existing
+   * job rather than a new one.
+   *
+   * BullMQ hands back the existing id with no signal at all, which is the part
+   * deliberately not copied: silent deduplication turns "why didn't my job
+   * run?" into a debugging session. `sync` always reports `false` — it
+   * executes inline and does not deduplicate, exactly as it does not retry.
+   */
+  deduplicated: boolean
+}
+
+/** What a driver is asked to install. Resolved; never the user's shorthand. */
+export interface ScheduleSpec {
+  /** `concierge:<jobName>`. Namespaced so the sweep can ignore foreign schedulers. */
+  id: string
+  jobName: string
+  expression: string
+  /** IANA zone. Always present — resolution defaults it to UTC, never system-local. */
+  tz: string
+  payload?: unknown
+}
+
+export interface ScheduleSummary {
+  id: string
+  jobName: string
+  queue: string
+  expression: string
+  tz: string
+  /** Next fire time, when the driver knows it. */
+  next?: number
+  /**
+   * Ticks produced so far, when the driver tracks it.
+   *
+   * There is deliberately no `last` field. `JobSchedulerJson` (bullmq 5.63.0)
+   * exposes no previous-fire time — `RepeatOptions.prevMillis` is marked
+   * internal and is not returned — and deriving one from the most recent
+   * produced job is an extra read per row whose only purpose is to make a
+   * column look complete.
+   */
+  iterationCount?: number
+}
+
+/**
+ * Presence IS the capability, exactly as with `introspect`. A driver either
+ * schedules or does not, as a type-level fact. Boolean flags alongside optional
+ * methods permit a driver declaring support it lacks, and typecheck fine.
+ *
+ * TICK-UNIQUENESS IS A DRIVER RESPONSIBILITY, NOT THE SUPERVISOR'S. Every
+ * instance reconciles at boot with no coordination, because `bullmq` guarantees
+ * one delayed job in flight per scheduler atomically in Lua and `memory` is
+ * single-process. A driver with neither property would double-fire every
+ * schedule on every instance, silently. This comment is the only warning its
+ * author will get.
+ */
+export interface DriverScheduling {
+  /** Idempotent by `spec.id`. A changed expression updates in place. */
+  upsert: (queue: string, spec: ScheduleSpec) => Promise<void>
+  list: (queue: string) => Promise<ScheduleSummary[]>
+  remove: (queue: string, id: string) => Promise<void>
+}
+
 export interface ConciergeDriver {
   readonly name: string
   readonly capabilities: DriverCapabilities
@@ -156,6 +258,8 @@ export interface ConciergeDriver {
    * unrepresentable rather than merely untested.
    */
   readonly introspect?: DriverIntrospection
+
+  readonly schedule?: DriverScheduling
 
   init: () => Promise<void>
   close: (force: boolean) => Promise<void>
@@ -175,7 +279,7 @@ export interface ConciergeDriver {
   /** Associates a handler with a queue+name. Called at boot for every scanned job. */
   registerHandler: (queue: string, name: string, handler: JobHandler) => void
 
-  enqueue: (queue: string, job: EnqueueOptions) => Promise<{ id: string }>
+  enqueue: (queue: string, job: EnqueueOptions) => Promise<EnqueueResult>
   consume: (queue: string, opts: ConsumeOptions, onJob?: JobHandler) => Consumer
   /**
    * The number of jobs on `queue` that are due now and not yet started —

@@ -336,7 +336,8 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
         backoff: job.backoff,
         createdAt: Date.now(),
       })
-      return { id }
+      // No dedup support yet (Task 5); every enqueue is a new job.
+      return { id, deduplicated: false }
     },
 
     consume: (queue, opts, onJob): Consumer => {
