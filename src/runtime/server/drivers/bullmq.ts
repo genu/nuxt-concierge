@@ -1,12 +1,12 @@
 import { Queue, UnrecoverableError, Worker } from 'bullmq'
-import type { Job, JobType } from 'bullmq'
+import type { Job, JobsOptions, JobType } from 'bullmq'
 import { Redis } from 'ioredis'
 import type { RedisOptions } from 'ioredis'
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
 import type { BullmqOptions } from '../../../options'
-import type { ConciergeDriver, Consumer, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, EnqueueOptions, JobState, JobSummary } from './types'
 import type { CreateDriverOptions } from './index'
 
 /** Matches memory.ts so log output from either driver is tagged the same way. */
@@ -139,6 +139,24 @@ export const jobToSummary = (job: Job, queue: string, state: JobState): JobSumma
   failedReason: job.failedReason ?? undefined,
 })
 
+/**
+ * Projects `EnqueueOptions` onto BullMQ's own job options. Exported and pure so
+ * the mapping is testable without a live Redis.
+ */
+export const bullmqAddOptions = (job: EnqueueOptions): JobsOptions => ({
+  delay: job.delay,
+  // Straight through, no arithmetic: EnqueueOptions.attempts already means
+  // what BullMQ's attempts means.
+  attempts: job.attempts,
+  backoff: job.backoff,
+  // Straight through for the same reason. Note `deduplication`, never the
+  // deprecated `debounce` — they take the identical shape in 5.63.0, which is
+  // exactly what would make building on the wrong one look fine until v6.
+  deduplication: job.dedup,
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+})
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
   const bull = resolveBullmqOptions(opts.bullmq)
@@ -240,6 +258,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
           envelope: job.data,
           stack: job.stacktrace?.join('\n') || undefined,
           raw: { bullState, opts: job.opts as Record<string, unknown> },
+          deduplicationId: job.deduplicationId ?? undefined,
         }
       },
 
@@ -283,19 +302,27 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
     registerHandler: (queue, name, handler) => { handlers.set(key(queue, name), handler) },
 
     enqueue: async (queue, job) => {
-      const added = await queueOf(queue).add(job.name, encodePayload(job.payload), {
-        delay: job.delay,
-        // Straight through, no arithmetic: EnqueueOptions.attempts already
-        // means what BullMQ's attempts means. Before this, nothing passed
-        // attempts at all, BullMQ defaulted to 0, and `attemptsMade + 1 < 0`
-        // is never true — so a failing job was never retried in production
-        // while the memory driver retried it three times.
-        attempts: job.attempts,
-        backoff: job.backoff,
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { count: 5000 },
-      })
-      return { id: String(added.id), deduplicated: false }
+      const q = queueOf(queue)
+
+      // Read the current holder of the dedup key BEFORE adding.
+      //
+      // `q.keys.de` is BullMQ's own dedup key base (prefix + queue name),
+      // exposed as the typed `KeysMap` on `QueueBase` and used by
+      // `Scripts.addJob` itself to build `${keys.de}:${deduplicationId}`
+      // (scripts.js:139). Reading from there rather than hardcoding
+      // `bull:<queue>:de:` means a prefix change cannot silently make this
+      // read the wrong key and report every suppressed enqueue as fresh —
+      // which would be a wrong `deduplicated` flag with no other symptom.
+      const before = job.dedup
+        ? await client().get(`${q.keys.de}:${job.dedup.id}`)
+        : null
+
+      const added = await q.add(job.name, encodePayload(job.payload), bullmqAddOptions(job))
+      const id = String(added.id)
+
+      // The key was already held by the very job we were handed back: this
+      // call added nothing.
+      return { id, deduplicated: before !== null && before === id }
     },
 
     consume: (queue, consumeOpts, onJob): Consumer => {

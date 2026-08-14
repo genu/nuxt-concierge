@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { Queue, UnrecoverableError } from 'bullmq'
 import {
   buildConnection,
+  bullmqAddOptions,
   createBullmqDriver,
   isPermanentFailure,
   resolveBullmqOptions,
@@ -199,5 +200,42 @@ describe('bullmq enqueue retry options', () => {
     const opts = add.mock.calls[0]![2] as Record<string, unknown>
     expect(opts.attempts).toBeUndefined()
     expect(opts.backoff).toBeUndefined()
+  })
+})
+
+describe('bullmqAddOptions', () => {
+  it('passes dedup straight through with no translation', () => {
+    // Straight through, deliberately: EnqueueOptions.dedup is shaped exactly
+    // like BullMQ's DeduplicationOptions. A translation layer here is where a
+    // semantic drift would hide, the same reasoning that keeps BackoffOptions
+    // shaped like BullMQ's own.
+    const opts = bullmqAddOptions({
+      name: 'j', payload: {}, dedup: { id: 'k', ttl: 5_000, extend: true, replace: true },
+    })
+    expect(opts.deduplication).toEqual({ id: 'k', ttl: 5_000, extend: true, replace: true })
+  })
+
+  it('omits deduplication entirely when the job declares none', () => {
+    // `undefined` rather than `{}`: BullMQ branches on the option's presence,
+    // and an empty object with no `id` would take the deduplicate path with an
+    // undefined key.
+    expect(bullmqAddOptions({ name: 'j', payload: {} }).deduplication).toBeUndefined()
+  })
+
+  it('never sets the deprecated debounce option', () => {
+    // `debounce` is deprecated in favour of `deduplication` in 5.63.0 and
+    // takes the identical shape, so building on it would work today and break
+    // silently at the v6 removal.
+    const opts = bullmqAddOptions({ name: 'j', payload: {}, dedup: { id: 'k' } })
+    expect(opts).not.toHaveProperty('debounce')
+  })
+
+  it('still carries attempts, backoff and delay', () => {
+    const opts = bullmqAddOptions({
+      name: 'j', payload: {}, delay: 100, attempts: 3, backoff: { type: 'fixed', delay: 50 },
+    })
+    expect(opts.delay).toBe(100)
+    expect(opts.attempts).toBe(3)
+    expect(opts.backoff).toEqual({ type: 'fixed', delay: 50 })
   })
 })
