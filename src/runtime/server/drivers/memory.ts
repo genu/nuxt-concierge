@@ -393,8 +393,9 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
           if (job.dedup.replace) {
             // DEBOUNCE. Supersede the pending job so the burst collapses onto
             // the LAST payload, and re-arm the window when `extend` is set.
-            // Only a job still WAITING can be replaced — one already running
-            // or finished is not "pending" in any sense BullMQ's own
+            // Only a job still in the `pending` array (waiting OR delayed) can
+            // be replaced — one already claimed by the poll loop (active) or
+            // finished is not "pending" in any sense BullMQ's own
             // removeDelayedJob would recognise.
             const q = queueOf(queue)
             const idx = q.findIndex(j => j.id === existing.jobId)
@@ -410,9 +411,19 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               })
               return { id, deduplicated: false }
             }
+            // Nothing to supersede — the target was already claimed by the
+            // poll loop or has finished. This enqueue is simply suppressed, so
+            // fall through to the shared re-arm below rather than returning
+            // early.
           }
-          else if (job.dedup.extend && job.dedup.ttl !== undefined) {
-            // Sliding window without replacement: re-arm, keep the original.
+
+          // Applies to EVERY suppressed enqueue, replace or not. Hoisted out
+          // of the replace branch deliberately: a `{ extend, replace }`
+          // debounce whose target had already gone active used to fall past
+          // this and let the window lapse, so a burst against a long-running
+          // job silently produced a second run — the exact failure debounce
+          // exists to prevent.
+          if (job.dedup.extend && job.dedup.ttl !== undefined) {
             dedupKeys.set(k, { jobId: existing.jobId, expiresAt: Date.now() + job.dedup.ttl })
           }
 

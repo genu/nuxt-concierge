@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMemoryDriver } from '../../../src/runtime/server/drivers/memory'
+import { decodePayload } from '../../../src/runtime/server/envelope'
 
 const flush = () => new Promise(r => setTimeout(r, 60))
 
@@ -103,6 +104,34 @@ describe('memory driver deduplication — debounce mode', () => {
     // throttle this job would carry { n: 1 }.
     const detail = await driver.introspect!.get('default', last.id)
     expect(detail?.deduplicationId).toBe('k')
+    // THE assertion this test exists for. Under throttle the surviving job
+    // would carry { n: 1 }; `replace` is what makes it the last one enqueued.
+    // Without this line the test passes whether or not replace works at all.
+    expect(decodePayload(detail!.envelope)).toEqual({ n: 3 })
+  })
+
+  it('re-arms the ttl when the debounce target is already running', async () => {
+    // `extend` means "re-arm on each SUPPRESSED enqueue", and an enqueue
+    // suppressed while the target is ACTIVE is one. Before this was hoisted,
+    // the window lapsed and the next enqueue produced a second run.
+    const driver = createMemoryDriver()
+    driver.registerHandler('default', 'j', async () => {
+      await new Promise(r => setTimeout(r, 400))
+    })
+    driver.consume('default', { concurrency: 1 })
+
+    const dedup = { id: 'k', ttl: 150, extend: true, replace: true }
+    await driver.enqueue('default', { name: 'j', payload: {}, dedup })
+    await new Promise(r => setTimeout(r, 60))
+
+    // Suppressed while the handler is mid-flight; this must re-arm the window.
+    expect((await driver.enqueue('default', { name: 'j', payload: {}, dedup })).deduplicated).toBe(true)
+
+    await new Promise(r => setTimeout(r, 120))
+    // Past the ORIGINAL 150ms expiry, inside the re-armed one.
+    expect((await driver.enqueue('default', { name: 'j', payload: {}, dedup })).deduplicated).toBe(true)
+
+    await driver.close(true)
   })
 })
 
