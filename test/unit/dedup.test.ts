@@ -90,6 +90,41 @@ describe('canonicalize', () => {
     bare.a = 1
     expect(canonicalize(bare)).toBe(canonicalize({ a: 1 }))
   })
+
+  it('distinguishes two different URLs', () => {
+    // A URL has NO own enumerable properties, so the type brand alone gives
+    // every instance the same string. devalue stringifies URL natively, so
+    // this is an enqueueable payload, not a hypothetical one.
+    expect(canonicalize(new URL('http://a.example.com'))).not.toBe(canonicalize(new URL('http://b.example.com')))
+  })
+
+  it('still treats two equal URLs as equal', () => {
+    expect(canonicalize(new URL('http://a.example.com/x'))).toBe(canonicalize(new URL('http://a.example.com/x')))
+  })
+
+  it('distinguishes two different URLSearchParams', () => {
+    expect(canonicalize(new URLSearchParams('a=1'))).not.toBe(canonicalize(new URLSearchParams('a=2')))
+  })
+
+  it('distinguishes two different boxed numbers', () => {
+    expect(canonicalize(new Number(5))).not.toBe(canonicalize(new Number(6)))
+  })
+
+  it('distinguishes two different boxed booleans', () => {
+    expect(canonicalize(new Boolean(true))).not.toBe(canonicalize(new Boolean(false)))
+  })
+
+  it('falls back to brand plus entries for a type devalue refuses', () => {
+    // devalue throws "Cannot stringify arbitrary non-POJOs" for a class
+    // instance, so this exercises the catch. Two equal instances must still
+    // canonicalize equal — a false NEGATIVE here means dedup silently stops
+    // working, which is as bad as a collision.
+    class Point {
+      constructor(readonly x: number) {}
+    }
+    expect(canonicalize(new Point(1))).toBe(canonicalize(new Point(1)))
+    expect(canonicalize(new Point(1))).not.toBe(canonicalize(new Point(2)))
+  })
 })
 
 describe('defaultDedupId', () => {

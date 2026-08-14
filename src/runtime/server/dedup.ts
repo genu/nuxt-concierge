@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { stringify } from 'devalue'
 import type { UniqueOptions } from './types'
 import type { DedupOptions } from './drivers/types'
 
@@ -60,23 +61,33 @@ export const canonicalize = (value: unknown): string => {
     .map(([k, v]) => `${canonicalize(k)}=${canonicalize(v)}`)
     .sort()
 
-  // Plain objects get the bare `o:` tag; anything else is BRANDED first.
-  //
-  // Without this, every value whose own enumerable properties are empty — a
-  // URL, an Error, a getter-only class instance — collapses onto `o:{}`,
-  // identical to a literal `{}`; and `new Uint8Array([1,2,3])` collapses onto
-  // the same string as `{0:1,1:2,2:3}`. Both are silent key collisions, which
-  // is the exact bug class this module exists to prevent.
-  //
-  // The residual limit, stated rather than hidden: two values sharing a brand
-  // AND having no own enumerable properties still collide (two different
-  // Errors, say). devalue rejects those payloads before they can reach a
-  // queue, so the brand only has to stop them colliding with a plain object or
-  // with a differently-branded type — which it does.
   const proto = Object.getPrototypeOf(value)
   if (proto === Object.prototype || proto === null) return `o:{${entries.join(',')}}`
 
-  return `c:${Object.prototype.toString.call(value)}:{${entries.join(',')}}`
+  // A non-plain object. The BRAND alone is not enough: a type whose data lives
+  // in internal slots rather than own enumerable properties — URL,
+  // URLSearchParams, a boxed primitive — has no entries at all, so every
+  // instance of it would share one string. That was this module's original
+  // defect, found again one type-family later.
+  //
+  // devalue is this project's serializer and therefore the authority on what a
+  // payload can even contain, so its own output is the value encoding here.
+  // The types it supports are exactly the types that can reach a queue, and
+  // for these leaf types its output is deterministic — there is no key
+  // ordering to vary, and every ordered container (Map, Set, Array, plain
+  // object) was handled by a branch above and never reaches this line.
+  //
+  // devalue throws on an arbitrary non-POJO (an Error, a class instance).
+  // Such a payload cannot be enqueued at all, so its encoding cannot cause a
+  // real collision — the brand plus canonicalized entries is a safe last
+  // resort, and it keeps this function total rather than throwing at enqueue.
+  const brand = Object.prototype.toString.call(value)
+  try {
+    return `c:${brand}:${stringify(value)}`
+  }
+  catch {
+    return `c:${brand}:{${entries.join(',')}}`
+  }
 }
 
 /**
