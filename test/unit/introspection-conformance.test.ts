@@ -195,6 +195,28 @@ describe.each(INTROSPECTING_DRIVERS)('%s driver introspection contract', (name, 
     expect(detail!.envelope).not.toMatchObject({ hello: 'world' })
   })
 
+  it('never puts the raw envelope or a stack trace on a list() row', async () => {
+    const queue = queueName('list-no-leak')
+    driver.registerHandler(queue, 'bad', () => { throw new Error('boom') })
+    consumer = driver.consume(queue, { concurrency: 1 })
+
+    await driver.enqueue(queue, { name: 'bad', payload: { secret: 'do not leak' }, attempts: 1 })
+    await until(async () => (await driver.introspect!.counts(queue)).failed === 1)
+
+    const { items } = await driver.introspect!.list(queue, 'failed', { offset: 0, limit: 10 })
+
+    expect(items).toHaveLength(1)
+    // `get()` legitimately returns both (asserted above) — that IS its
+    // contract. `list()`'s contract is `JobSummary`, which has neither field.
+    // A driver that reuses its detail-shape mapper for the list path
+    // type-checks fine (`JobDetail extends JobSummary`, so a wider object
+    // satisfies the narrower declared return type on assignment) while
+    // actually shipping raw devalue payload content and a stack trace on
+    // every row of every list response, not just the one a caller opens.
+    expect(items[0]).not.toHaveProperty('envelope')
+    expect(items[0]).not.toHaveProperty('stack')
+  })
+
   it('returns undefined from get for an unknown id', async () => {
     const queue = queueName('missing')
     expect(await driver.introspect!.get(queue, 'no-such-job')).toBeUndefined()

@@ -130,12 +130,35 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     envelope: record.envelope,
   })
 
+  /**
+   * Projects to EXACTLY `JobSummary`'s fields — never `toDetail`/`JobDetail`.
+   * `JobDetail extends JobSummary`, so passing a `TerminalRecord` through
+   * `toDetail` here would type-check (a wider object satisfies the narrower
+   * declared return type on assignment) while actually putting `envelope`
+   * (raw devalue payload content) and `stack` on the wire for every row in a
+   * list response, not just the one row a caller opens via `get()`. `get()`
+   * returning the raw envelope is its contract; `list()`'s is `JobSummary`,
+   * which has neither field, and the shared conformance table asserts this
+   * directly (`introspection-conformance.test.ts`).
+   */
+  const toSummary = (record: TerminalRecord): JobSummary => ({
+    id: record.id,
+    name: record.name,
+    queue: record.queue,
+    state: record.state,
+    attemptsMade: record.attemptsMade,
+    attempts: record.attempts,
+    createdAt: record.createdAt,
+    finishedAt: record.finishedAt || undefined,
+    failedReason: record.failedReason,
+  })
+
   const listByState = (queue: string, state: JobState): JobSummary[] => {
     const now = Date.now()
     if (state === 'completed' || state === 'failed') {
       return historyOf(queue)
         .filter(r => r.state === state)
-        .map(r => toDetail(r))
+        .map(r => toSummary(r))
     }
     if (state === 'active') {
       return [...inFlight.values()]

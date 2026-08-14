@@ -65,7 +65,55 @@ export interface OverviewResponse {
   workers: WorkerView[]
 }
 
-export const buildOverview = async (supervisor: Supervisor | undefined): Promise<OverviewResponse> => {
+/**
+ * A dev panel that polls every 2s does not need a driver read to ever take
+ * longer than that to be useful — and a bound longer than the poll interval
+ * would just stack concurrent requests once one starts running over, rather
+ * than ever letting the panel catch up. This is short enough to keep
+ * `/overview` responsive and generous enough for a normal (non-outage) read.
+ */
+const DRIVER_READ_TIMEOUT_MS = 1_500
+
+/**
+ * Races a driver read against a fixed timeout so a fully unreachable backend
+ * cannot hang the whole endpoint. This exists because of a real failure mode,
+ * not a hypothetical one: BullMQ requires its ioredis connections to be
+ * constructed with `maxRetriesPerRequest: null` (blocking commands need it),
+ * which means a command issued while disconnected sits in ioredis's offline
+ * queue forever — it never rejects on its own. Deliberately NOT solved by
+ * checking `driver.isHealthy()` first and skipping the read: `isHealthy()` is
+ * driven off ioredis's `error`/`ready` events, so a connection can still be
+ * reported healthy while an individual command is hanging (e.g. a partial
+ * outage, or a state transition in flight) — it is not a reliable gate on
+ * its own. The timeout bounds the read regardless of what `isHealthy()` says.
+ *
+ * Resolves to `undefined` on timeout rather than rejecting: a timed-out read
+ * is not an application error to propagate, it is exactly the "unknown right
+ * now" case `counts`/`workers` already represent with `undefined`/`[]`, and
+ * `driverHealthy` (read separately, synchronously, off the driver's own
+ * connection-state flag) is what carries the truth about *why*.
+ */
+const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T | undefined> => {
+  let timer: ReturnType<typeof setTimeout>
+  const timedOut = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms)
+    // Never holds the process open on its own — this is a response-shaping
+    // bound, not real work the process should wait to finish.
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([promise, timedOut])
+  }
+  finally {
+    clearTimeout(timer!)
+  }
+}
+
+export const buildOverview = async (
+  supervisor: Supervisor | undefined,
+  /** Overridable so tests can exercise the timeout path without a real wait. */
+  readTimeoutMs: number = DRIVER_READ_TIMEOUT_MS,
+): Promise<OverviewResponse> => {
   if (!supervisor) {
     return {
       state: 'absent',
@@ -87,13 +135,18 @@ export const buildOverview = async (supervisor: Supervisor | undefined): Promise
   const queues = await Promise.all(names.map(async name => ({
     name,
     concurrency: config.worker.queues[name]!,
-    // Undefined, not zeroes: a driver with no introspection has UNKNOWN counts,
-    // and zeroes would have the UI render a confident empty table.
-    counts: introspect ? await introspect.counts(name) : undefined,
+    // Undefined, not zeroes: a driver with no introspection has UNKNOWN
+    // counts, and zeroes would have the UI render a confident empty table.
+    // Also undefined on a timed-out read — same UI treatment as "the driver
+    // cannot answer this", which is true either way.
+    counts: introspect ? await withTimeout(introspect.counts(name), readTimeoutMs) : undefined,
   })))
 
   const now = Date.now()
-  const records = await driver.workers()
+  // `?? []`, not left as `undefined`: a timed-out worker read must not crash
+  // `.map()` below, and an empty worker list is the honest answer to "who do
+  // we know about right now" when the read that would tell us is hanging.
+  const records = await withTimeout(driver.workers(), readTimeoutMs) ?? []
 
   return {
     state: supervisor.getState(),

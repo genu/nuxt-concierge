@@ -9,6 +9,13 @@ const fakeSupervisor = (over: Partial<{
   history: 'durable' | 'bounded' | 'none'
   introspectable: boolean
   workers: Array<{ id: string, lastHeartbeat: number }>
+  /**
+   * Simulates ioredis's offline command queue against a dead connection
+   * (`maxRetriesPerRequest: null`): the promise never settles at all, rather
+   * than resolving or rejecting late. Only `buildOverview`'s own timeout is
+   * allowed to move past this.
+   */
+  hangOnRead: boolean
 }> = {}) => ({
   getState: () => over.state ?? 'running',
   config: {
@@ -27,13 +34,17 @@ const fakeSupervisor = (over: Partial<{
     },
     introspect: (over.introspectable ?? true)
       ? {
-          counts: async () => ({ waiting: 1, active: 0, completed: 2, failed: 3, delayed: 0 }),
+          counts: over.hangOnRead
+            ? () => new Promise(() => {})
+            : async () => ({ waiting: 1, active: 0, completed: 2, failed: 3, delayed: 0 }),
           list: async () => ({ items: [], total: 0 }),
           get: async () => undefined,
           retry: async () => {},
         }
       : undefined,
-    workers: async () => over.workers ?? [],
+    workers: over.hangOnRead
+      ? () => new Promise(() => {})
+      : async () => over.workers ?? [],
   },
 } as unknown as Supervisor)
 
@@ -84,5 +95,21 @@ describe('buildOverview', () => {
     // second assertion alone.
     expect(result.workers.find(w => w.id === 'a')!.stale).toBe(false)
     expect(result.workers.find(w => w.id === 'b')!.stale).toBe(true)
+  })
+
+  it('still responds when a driver read never resolves, instead of hanging forever', async () => {
+    // A short injected timeout, not the real 1.5s default and not fake
+    // timers: this is a genuine Promise.race against a promise that never
+    // settles, so the test's own wall-clock cost is bounded by this number,
+    // not by production's constant.
+    const result = await buildOverview(fakeSupervisor({ hangOnRead: true, healthy: false }), 20)
+
+    // All three matter together: a version of this that only checked
+    // `driverHealthy` would pass even if `queues`/`workers` still hung, and
+    // a version that only checked the response resolved at all would miss a
+    // driver that fabricates zeroed counts instead of admitting "unknown".
+    expect(result.driverHealthy).toBe(false)
+    expect(result.queues[0]!.counts).toBeUndefined()
+    expect(result.workers).toEqual([])
   })
 })
