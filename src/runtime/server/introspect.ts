@@ -29,6 +29,15 @@ export interface WorkerView {
   pid: number
   role: string
   queues: string[]
+  /**
+   * Included deliberately, not an oversight: `WorkerRecord` already carries
+   * this field and the `...r` spread below puts it on the wire whether or not
+   * it is declared here. Declaring it is what lets the SPA type against what
+   * actually arrives instead of reading an undeclared property off `unknown`
+   * — the alternative (omitting it) doesn't hide the field, it just leaves
+   * the wire shape and the type lying to each other.
+   */
+  concurrency: Record<string, number>
   version: string
   startedAt: number
   lastHeartbeat: number

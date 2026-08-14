@@ -45,12 +45,17 @@ describe('the built dashboard client', () => {
     expect(files.length).toBeGreaterThan(0)
     const total = files.reduce((n, f) => n + statSync(f).size, 0)
 
-    // Ceiling set from the FIRST real measurement, not invented. Measured
-    // 391,841 bytes (.js + .css) on 2026-08-14 with @nuxt/ui 4.10.0, vue
-    // 3.5.41, tailwindcss 4.3.3, vite 8.2.1. 550,000 is ~1.4x that, so a
-    // dependency bump that doubles the bundle fails CI rather than arriving
-    // silently in a consumer's node_modules.
-    const CLIENT_SIZE_BUDGET_BYTES = 550_000
+    // Ceiling set from a real measurement, not invented. First measured
+    // 391,841 bytes (.js + .css) on 2026-08-14 with only the placeholder
+    // shell (@nuxt/ui 4.10.0, vue 3.5.41, tailwindcss 4.3.3, vite 8.2.1).
+    // Re-measured at 583,410 bytes on 2026-08-14, same dependency versions,
+    // after Task 11 added the three real panels (UTabs, USelect, USlideover,
+    // UBadge and their usage pulled in more of @nuxt/ui's runtime than the
+    // shell alone did). 820,000 is ~1.4x the new measurement — the same
+    // margin the original ceiling used — so a dependency bump that doubles
+    // the bundle still fails CI rather than arriving silently in a
+    // consumer's node_modules.
+    const CLIENT_SIZE_BUDGET_BYTES = 820_000
     expect(total).toBeLessThan(CLIENT_SIZE_BUDGET_BYTES)
   })
 })

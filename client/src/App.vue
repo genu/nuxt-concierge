@@ -1,5 +1,8 @@
 <script lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import OverviewPanel from './panels/OverviewPanel.vue'
+import JobsPanel from './panels/JobsPanel.vue'
+import RegistryPanel from './panels/RegistryPanel.vue'
 import type { Overview } from './types'
 </script>
 
@@ -60,7 +63,35 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     </header>
 
     <UAlert v-if="error" color="error" :title="'Cannot reach the Concierge API'" :description="error" />
-    <p v-else-if="!overview" class="text-sm text-muted">Connecting…</p>
-    <pre v-else class="text-xs overflow-auto">{{ overview }}</pre>
+    <p v-else-if="!overview" class="text-sm text-muted">
+      Connecting…
+    </p>
+    <UAlert
+      v-else-if="overview.state === 'absent' || overview.state === 'starting'"
+      color="neutral"
+      variant="subtle"
+      icon="i-lucide-loader"
+      title="Concierge is starting"
+      description="The supervisor has not finished booting. This panel will populate on its own."
+    />
+    <UTabs
+      v-else
+      :items="[
+        { label: 'Overview', slot: 'overview' },
+        { label: 'Jobs', slot: 'jobs' },
+        { label: 'Registry', slot: 'registry' },
+      ]"
+      size="xs"
+    >
+      <template #overview>
+        <OverviewPanel :overview="overview" />
+      </template>
+      <template #jobs>
+        <JobsPanel :overview="overview" />
+      </template>
+      <template #registry>
+        <RegistryPanel />
+      </template>
+    </UTabs>
   </div>
 </template>

@@ -384,11 +384,15 @@ cannot inherit its theme. Both halves of that are accepted.
 Nor is the `dev:prepare` change — without it, a fresh clone's first `pnpm dev` serves a 404 at
 the DevTools tab, which reads as a broken module rather than a missing build step.
 
-CI gains the client build plus a bundle-size check. **The ceiling is 550,000 bytes, set from the
-first real measurement (391,841 bytes of `.js` + `.css` on 2026-08-14) with a ~1.4x margin, not
-invented here.** "The queue module added 800 KB to your `node_modules`" is a fair complaint, and
-the honest way to bound it is to measure
-the shell once it builds and then fail CI on regression.
+CI gains the client build plus a bundle-size check. **The ceiling is 820,000 bytes, set from a real
+measurement, not invented here.** First measured at 391,841 bytes (`.js` + `.css`) on 2026-08-14
+against the placeholder shell alone, with a ceiling of 550,000 (~1.4x). Re-measured at 583,410
+bytes on 2026-08-14 once the three real panels (Overview, Jobs, Registry) landed — `UTabs`,
+`USelect`, `USlideover` and `UBadge` pull in more of `@nuxt/ui`'s runtime than the shell's bare
+`UButton`/`UAlert` did — and the ceiling raised to 820,000 (~1.4x the new measurement), keeping the
+same margin rather than the same number. "The queue module added 800 KB to your `node_modules`" is
+a fair complaint, and the honest way to bound it is to measure the built output and then fail CI on
+regression.
 
 ### The DevTools tab
 

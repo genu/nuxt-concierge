@@ -23,5 +23,7 @@ export interface Overview {
     /** Computed server-side. The SPA never derives staleness itself. */
     stale: boolean
     active: unknown[]
+    /** Per-queue concurrency this worker was started with. Raw, not derived. */
+    concurrency: Record<string, number>
   }>
 }
