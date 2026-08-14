@@ -521,8 +521,11 @@ Both are acceptable pre-1.0 and neither needs a migration path.
 
 - **`managementUI` is removed** from `ModuleOptions` and `ResolvedConciergeOptions`. A config
   still setting it gets an unknown-key type error, which is the loud failure.
-- **`/_concierge` no longer exists in production builds.** Anyone relying on a production
-  bull-board at that path loses it. This is the deliberate trade recorded under Decisions.
+- **The production bull-board at `/_concierge` no longer exists.** Anyone relying on it
+  loses it. This is the deliberate trade recorded under Decisions. `/_concierge/health`
+  is unaffected — it stays registered unconditionally as the production readiness probe
+  (see the route table above); only `/_concierge/api/**` and `/_concierge/ui/**` are
+  dev-only.
 
 ### Dependencies
 

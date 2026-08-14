@@ -321,11 +321,11 @@ anything else a deployed process could be made to flip. This is deliberate: a qu
 dashboard with a retry button needs no authentication of its own specifically *because* it
 cannot be reached outside a local dev server.
 
-Open it from **Nuxt DevTools** — look for the "Concierge" tab. There is no URL to visit
-directly: the dashboard is served at `/_concierge/ui/`, but that path is only meaningful
-inside the DevTools iframe, and the module deliberately logs no URL for it (the dev server's
-own port is not yet known at the point the module logs its startup line, so printing one
-was previously wrong whenever port 3000 was taken).
+Open it from **Nuxt DevTools** — look for the "Concierge" tab — or visit `/_concierge/ui/`
+directly from your dev server's own base URL (e.g. `http://localhost:3000/_concierge/ui/`);
+both reach the same SPA. The module deliberately logs no URL for it, though: the dev
+server's own port is not yet known at the point the module logs its startup line, so
+printing one was previously wrong whenever port 3000 was taken.
 
 It shows, per queue: live counts by state (waiting/active/completed/failed/delayed), the
 worker processes currently attached (with a staleness flag once a heartbeat falls behind
