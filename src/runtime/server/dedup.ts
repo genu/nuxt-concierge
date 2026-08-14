@@ -37,6 +37,11 @@ export const canonicalize = (value: unknown): string => {
   }
 
   if (value instanceof Date) return `d:${value.getTime()}`
+  // devalue round-trips RegExp natively, so it is a payload type a user can
+  // genuinely enqueue. It gets a real encoding rather than falling through to
+  // the object branch below, where `Object.entries(/abc/)` is `[]` and every
+  // regex would canonicalize identically to `{}`.
+  if (value instanceof RegExp) return `r:${canonicalize(value.source)}:${value.flags}`
   if (value instanceof Map) {
     // Sorted by the CANONICAL FORM of each entry, not by the raw key: a Map
     // may be keyed by objects, which have no meaningful `<` ordering.
@@ -54,7 +59,24 @@ export const canonicalize = (value: unknown): string => {
   const entries = Object.entries(value as Record<string, unknown>)
     .map(([k, v]) => `${canonicalize(k)}=${canonicalize(v)}`)
     .sort()
-  return `o:{${entries.join(',')}}`
+
+  // Plain objects get the bare `o:` tag; anything else is BRANDED first.
+  //
+  // Without this, every value whose own enumerable properties are empty — a
+  // URL, an Error, a getter-only class instance — collapses onto `o:{}`,
+  // identical to a literal `{}`; and `new Uint8Array([1,2,3])` collapses onto
+  // the same string as `{0:1,1:2,2:3}`. Both are silent key collisions, which
+  // is the exact bug class this module exists to prevent.
+  //
+  // The residual limit, stated rather than hidden: two values sharing a brand
+  // AND having no own enumerable properties still collide (two different
+  // Errors, say). devalue rejects those payloads before they can reach a
+  // queue, so the brand only has to stop them colliding with a plain object or
+  // with a differently-branded type — which it does.
+  const proto = Object.getPrototypeOf(value)
+  if (proto === Object.prototype || proto === null) return `o:{${entries.join(',')}}`
+
+  return `c:${Object.prototype.toString.call(value)}:{${entries.join(',')}}`
 }
 
 /**

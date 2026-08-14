@@ -48,6 +48,48 @@ describe('canonicalize', () => {
   it('distinguishes null from undefined', () => {
     expect(canonicalize({ a: null })).not.toBe(canonicalize({ a: undefined }))
   })
+
+  it('distinguishes two different regular expressions', () => {
+    expect(canonicalize(/abc/)).not.toBe(canonicalize(/xyz/))
+  })
+
+  it('distinguishes regexp flags', () => {
+    expect(canonicalize(/abc/g)).not.toBe(canonicalize(/abc/i))
+  })
+
+  it('distinguishes a regexp from an empty plain object', () => {
+    // `Object.entries(/abc/)` is `[]`, so without an explicit branch every
+    // regex canonicalizes identically to `{}`.
+    expect(canonicalize(/abc/)).not.toBe(canonicalize({}))
+  })
+
+  it('still treats two equal regexps as equal', () => {
+    // Paired with the three negatives above: an encoding that returned a fresh
+    // unique string per call would satisfy all of them and be useless.
+    expect(canonicalize(/abc/g)).toBe(canonicalize(/abc/g))
+  })
+
+  it('distinguishes a typed array from a plain object with the same entries', () => {
+    expect(canonicalize(new Uint8Array([1, 2, 3]))).not.toBe(canonicalize({ 0: 1, 1: 2, 2: 3 }))
+  })
+
+  it('distinguishes a class instance from a plain object with the same entries', () => {
+    class Point {
+      constructor(readonly x: number) {}
+    }
+    // Both have own enumerable `{ x: 1 }` and both brand as [object Object];
+    // only the plain-prototype check separates them.
+    expect(canonicalize(new Point(1))).not.toBe(canonicalize({ x: 1 }))
+  })
+
+  it('treats a null-prototype object as plain', () => {
+    // Object.create(null) is a plain bag of data, not an exotic type — the
+    // brand branch must not catch it, or a payload built with a null-prototype
+    // object would never dedup against its literal equivalent.
+    const bare = Object.create(null) as Record<string, unknown>
+    bare.a = 1
+    expect(canonicalize(bare)).toBe(canonicalize({ a: 1 }))
+  })
 })
 
 describe('defaultDedupId', () => {
