@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
-import { execSync } from 'node:child_process'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import {
-  spawnApp, waitForReady, readLog, cleanup, flushRedis, namespaceRedisUrl,
+  spawnApp, waitForReady, readLog, cleanup, flushRedis,
   killAllSpawned, type AppHandle, type LogLine,
 } from './harness'
 
@@ -21,16 +20,6 @@ interface TypedLogLine {
 }
 
 let app: AppHandle | undefined
-
-beforeAll(() => {
-  // Same reasoning as shutdown.test.ts: namespace REDIS_URL to a dedicated
-  // logical database before the build reads it, so `flushRedis` below can
-  // never touch an operator's real database. This file has its own beforeAll
-  // (and so its own build) because vitest runs each test file's hooks
-  // independently, not once across the whole `test:lifecycle` run.
-  if (process.env.REDIS_URL) process.env.REDIS_URL = namespaceRedisUrl(process.env.REDIS_URL)
-  execSync('pnpm dev:build', { stdio: 'inherit', timeout: 300_000 })
-}, 320_000)
 
 // Every bullmq scenario below shares one queue name in one Redis instance.
 // Without a flush, one scenario's leftovers could bleed into the next

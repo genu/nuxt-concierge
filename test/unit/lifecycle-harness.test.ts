@@ -1,9 +1,27 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { writeFileSync, rmSync } from 'node:fs'
+import { writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { namespaceRedisUrl, readLog, type AppHandle } from '../lifecycle/harness'
+
+describe('the lifecycle suite builds the playground exactly once', () => {
+  it('has no per-file build in any lifecycle test', () => {
+    const dir = resolve(import.meta.dirname, '../lifecycle')
+    const files = ['retry.test.ts', 'shutdown.test.ts', 'dashboard.test.ts']
+
+    for (const file of files) {
+      let source: string
+      try { source = readFileSync(resolve(dir, file), 'utf8') }
+      catch { continue }
+
+      // The build belongs in globalSetup. A per-file build is invisible in a
+      // green run — it only shows up as wall-clock time, which is exactly why
+      // it grew to two copies before anyone noticed.
+      expect(source, `${file} must not build the playground itself`).not.toMatch(/dev:build/)
+    }
+  })
+})
 
 describe('namespaceRedisUrl', () => {
   it('rewrites a plain URL with no path at all', () => {
