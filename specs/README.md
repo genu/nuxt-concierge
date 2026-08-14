@@ -7,9 +7,9 @@ This file is the index and the current state.
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
 | 3 | **Job API & typed enqueue** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) · [decisions](2026-08-13-spec3-decisions.md) |
-| 4 | **Dashboard** | Not written | — |
+| 4 | **Dashboard & driver introspection** | **Implemented** — merged, not yet released | [design](2026-08-13-concierge-v2-dashboard-design.md) · [plan](plans/2026-08-13-concierge-v2-spec4-dashboard.md) · [decisions](2026-08-13-spec4-decisions.md) |
 | 5 | Cron & dedup | Not written — split out of spec 3 | — |
-| 2 | Driver introspection SPI | Not written — **fold into spec 4** | — |
+| 2 | Driver introspection SPI | **Folded into spec 4**, as recommended below | [design](2026-08-13-concierge-v2-dashboard-design.md) |
 
 ## Why the order changed
 
@@ -41,9 +41,10 @@ metadata is dropped rather than deferred** — dual-side validation needs to *ex
 which source-text extraction cannot do. See
 [the spec 3 design](2026-08-13-concierge-v2-job-api-design.md) for the full reasoning.
 
-One item is a hard prerequisite rather than a nicety: **`pnpm typecheck` must run in CI**, with
+One item was a hard prerequisite rather than a nicety: **`pnpm typecheck` must run in CI**, with
 its 12 known errors fixed. Spec 3's deliverable is types, so shipping it behind a typecheck
-nobody runs leaves the central promise unverified.
+nobody runs leaves the central promise unverified. **Done** — `ci.yml` now runs `typecheck`,
+`typecheck:public`, `test:types` and `test:lifecycle`.
 
 ## Phase 1 outcome
 
@@ -51,13 +52,15 @@ Shipped as `nuxt-concierge@2.0.0-alpha` on the npm `next` tag (`latest` remains 
 SLSA provenance via trusted publishing. 175 unit tests, 10 lifecycle scenarios against real
 Redis including the two-process production shape.
 
-**Read both decisions records before starting spec 4 or 5** —
-[phase 1](2026-08-13-phase1-decisions.md) and [spec 3](2026-08-13-spec3-decisions.md). They carry
-the constraints, deferred items and hard-won facts that the design documents do not, including
-several that are build-breaking or silently behaviour-breaking if violated. Spec 3's first
-section in particular covers the generated-types machinery, which is easy to "simplify" into
-silent failure — `export *` inside a generated `.d.ts` and a nitro-only alias declaration both
-fail without an error.
+**Read all three decisions records before starting spec 5** —
+[phase 1](2026-08-13-phase1-decisions.md), [spec 3](2026-08-13-spec3-decisions.md) and
+[spec 4](2026-08-13-spec4-decisions.md). They carry the constraints, deferred items and
+hard-won facts that the design documents do not, including several that are build-breaking or
+silently behaviour-breaking if violated. Spec 3's first section in particular covers the
+generated-types machinery, which is easy to "simplify" into silent failure — `export *` inside
+a generated `.d.ts` and a nitro-only alias declaration both fail without an error. Spec 4's
+covers the build-order landmine that ships a tarball with no dashboard, and why the dashboard
+needs no auth of its own.
 
 ## Process notes worth carrying forward
 

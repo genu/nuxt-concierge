@@ -23,7 +23,7 @@ export const createSyncDriver = (): ConciergeDriver => {
 
   return {
     name: 'sync',
-    capabilities: { persistent: false, crossProcess: false },
+    capabilities: { persistent: false, crossProcess: false, history: 'none' },
 
     init: async () => {},
     close: async () => {},

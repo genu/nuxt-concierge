@@ -152,4 +152,31 @@ describe('payload envelope', () => {
   it('throws non-retryable error when payload is valid JSON but not valid devalue', () => {
     expectNonRetryable(() => decodePayload({ v: 1, payload: '{"a":1}' }))
   })
+
+  it('never embeds the raw payload text in the final catch\'s error message, direct call', () => {
+    // `sync`, `memory` and `bullmq` all call `decodePayload` directly (unlike
+    // the API layer, which only ever sees it wrapped by `decodeForDisplay`) —
+    // this is the direct-call coverage for the leak `describeEnvelopeShape`'s
+    // sibling catch, in `parse()`'s failure branch, exists to close. devalue's
+    // `parse` delegates to `JSON.parse`, whose `SyntaxError` quotes the
+    // offending text back verbatim; the fix reports `err.name` plus
+    // `payloadLength` instead.
+    const raw = 'not-devalue-at-all'
+    expectNonRetryable(() => decodePayload({ v: 1, payload: raw }))
+
+    const err = (() => {
+      try {
+        decodePayload({ v: 1, payload: raw })
+        return null
+      }
+      catch (e) {
+        return e as UnsupportedEnvelopeError
+      }
+    })()
+
+    expect(err).toBeInstanceOf(UnsupportedEnvelopeError)
+    expect(err!.message).not.toContain(raw)
+    expect(err!.message).toMatch(/payloadLength=18/)
+    expect(err!.message).toMatch(/cause=SyntaxError/)
+  })
 })

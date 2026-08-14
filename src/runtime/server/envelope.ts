@@ -80,8 +80,17 @@ export const decodePayload = (envelope: unknown): unknown => {
     return parse(envelope.payload)
   }
   catch (err) {
+    // `err.message` is NOT used here: devalue/JSON.parse failures quote the
+    // offending text back verbatim (e.g. `Unexpected token 'o', "the-actual-
+    // payload" is not valid JSON`), which would smuggle payload content
+    // straight through this catch — the exact leak `describeEnvelopeShape`
+    // exists to avoid for a malformed envelope. `err.name` is a fixed string
+    // from a closed set (SyntaxError, RangeError, …), never derived from the
+    // input, so it is safe to report.
+    const kind = err instanceof Error ? err.name : typeof err
     throw new UnsupportedEnvelopeError(
-      `Envelope payload could not be decoded: ${err instanceof Error ? err.message : String(err)}`,
+      `Envelope payload could not be decoded (payloadLength=${envelope.payload.length}, cause=${kind}). `
+      + `This usually means the encoded payload does not match the format devalue.stringify produces.`,
     )
   }
 }

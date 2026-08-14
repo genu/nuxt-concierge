@@ -28,16 +28,20 @@
     "access": "public"
   },
   "scripts": {
-    "prepack": "nuxt-module-build build",
+    "build:client": "pnpm --filter @nuxt-concierge/client build",
+    "dev:client": "pnpm --filter @nuxt-concierge/client dev",
+    "prepack": "nuxt-module-build build && pnpm build:client",
     "dev": "nuxi dev playground",
     "dev:build": "nuxi build playground",
-    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground",
+    "dev:prepare": "nuxt-module-build build --stub && nuxt-module-build prepare && nuxi prepare playground && pnpm build:client",
     "docs:build": "nuxi generate docs",
     "docs:preview": "nuxi preview docs",
     "docs:dev": "nuxi dev docs",
     "lint": "eslint .",
     "typecheck": "nuxi typecheck playground",
     "typecheck:public": "tsc --noEmit -p test/types/tsconfig.json",
+    "typecheck:tests": "tsc --noEmit -p test/tsconfig.json",
+    "typecheck:client": "pnpm --filter @nuxt-concierge/client typecheck",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:lifecycle": "vitest run --config vitest.lifecycle.config.ts",
@@ -58,9 +62,7 @@
     }
   },
   "dependencies": {
-    "@bull-board/api": "6.14.0",
-    "@bull-board/h3": "6.14.0",
-    "@bull-board/ui": "6.14.0",
+    "@nuxt/devtools-kit": "3.4.1",
     "@nuxt/kit": "4.5.2",
     "@standard-schema/spec": "1.1.0",
     "bullmq": "5.63.0",
@@ -68,8 +70,7 @@
     "defu": "6.1.7",
     "devalue": "5.4.1",
     "fast-glob": "3.3.3",
-    "ioredis": "5.9.0",
-    "ufo": "1.6.4"
+    "ioredis": "5.9.0"
   },
   "devDependencies": {
     "@nuxt/eslint-config": "1.16.0",

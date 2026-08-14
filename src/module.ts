@@ -6,13 +6,8 @@ import {
   addServerPlugin,
   addServerHandler,
 } from "@nuxt/kit";
+import { addCustomTab } from "@nuxt/devtools-kit";
 import defu from "defu";
-import {
-  withTrailingSlash,
-  withoutTrailingSlash,
-  cleanDoubleSlashes,
-  joinURL,
-} from "ufo";
 import { name, version, configKey, compatibility } from "../package.json";
 import { scanJobs } from "./scan";
 import {
@@ -45,17 +40,6 @@ export default defineNuxtModule<ModuleOptions>({
     const { resolve } = createResolver(import.meta.url);
     const logger = useLogger(name);
 
-    // Add Server handlers for UI
-    addServerHandler({
-      route: "/_concierge",
-      handler: resolve("./runtime/server/routes/ui-handler"),
-    });
-
-    addServerHandler({
-      route: "/_concierge/**",
-      handler: resolve("./runtime/server/routes/ui-handler"),
-    });
-
     addServerHandler({
       route: "/_concierge/health",
       handler: resolve("./runtime/server/routes/health"),
@@ -84,10 +68,64 @@ export default defineNuxtModule<ModuleOptions>({
       logger.success(`Discovered ${plural("job", jobs.length)}`);
     }
 
-    // Transpile BullBoard api because its not ESM
-    nuxt.options.build.transpile.push("@bull-board/api");
-    nuxt.options.build.transpile.push("@bull-board/h3");
-    nuxt.options.build.transpile.push("@bull-board/ui");
+    // Everything below is DEV-ONLY, gated at registration time rather than by a
+    // runtime flag. `managementUI` used to make this a config key a user could
+    // flip on in production, where /_concierge sat behind nothing but the
+    // worker-role gate — a queue dashboard with a retry button and no auth
+    // should not be one option away.
+    if (nuxt.options.dev) {
+      const clientDir = resolve("../dist/client");
+
+      // /_concierge/ui, NOT /_concierge: registering the SPA's static assets
+      // at the /_concierge baseURL itself was tried first and confirmed by
+      // direct experiment to shadow every sibling server route under that
+      // prefix — /_concierge/health returned 404 once this hook ran, and the
+      // same happens to every /_concierge/api/** route below. This is the
+      // fallback the spec named for exactly this outcome. /_concierge/health
+      // and /_concierge/api/** stay ordinary server routes with nothing
+      // shadowing them.
+      nuxt.hook("nitro:config", (nitroConfig) => {
+        nitroConfig.publicAssets ||= [];
+        nitroConfig.publicAssets.push({ dir: clientDir, baseURL: "/_concierge/ui", maxAge: 0 });
+      });
+
+      // Every dashboard API route. `method` is `get` for every plain read and
+      // `post` for the one route with a side effect (`jobs-retry`) — a dev
+      // server is reachable from any page a developer happens to visit, so
+      // without a method constraint a bare `GET` to the retry route would
+      // perform the retry too. The four reads have no side effect either way,
+      // but are constrained anyway so the route's contract matches what it
+      // actually does rather than accepting anything.
+      const API_HANDLERS: Record<string, { handler: string; method: "get" | "post" }> = {
+        "/_concierge/api/overview": { handler: "./runtime/server/routes/api/overview", method: "get" },
+        "/_concierge/api/queues/:queue/jobs": { handler: "./runtime/server/routes/api/jobs-list", method: "get" },
+        "/_concierge/api/queues/:queue/jobs/:id": { handler: "./runtime/server/routes/api/jobs-detail", method: "get" },
+        "/_concierge/api/queues/:queue/jobs/:id/retry": { handler: "./runtime/server/routes/api/jobs-retry", method: "post" },
+        "/_concierge/api/registry": { handler: "./runtime/server/routes/api/registry", method: "get" },
+      };
+
+      for (const [route, { handler, method }] of Object.entries(API_HANDLERS)) {
+        addServerHandler({ route, handler: resolve(handler), method });
+      }
+
+      // Dev-only, and it must STAY dev-only: these are absolute build-machine
+      // paths, and baking them into a production runtimeConfig would ship one
+      // developer's directory layout to every deployment.
+      nuxt.options.runtimeConfig.concierge = defu(
+        {
+          jobFiles: Object.fromEntries(jobs.map((job) => [job.name, job.file])),
+          generatedTypesPath: `${nuxt.options.buildDir}/types/concierge-jobs.d.ts`,
+        },
+        nuxt.options.runtimeConfig.concierge
+      );
+
+      addCustomTab({
+        name: "concierge",
+        title: "Concierge",
+        icon: "carbon:queued",
+        view: { type: "iframe", src: "/_concierge/ui/" },
+      });
+    }
 
     const resolved = resolveModuleOptions(options);
 
@@ -134,8 +172,9 @@ export default defineNuxtModule<ModuleOptions>({
     // The preset a user configures explicitly (nuxt.options.nitro.preset) is
     // not the same thing as the preset nitro actually resolves: serverless
     // targets (Vercel/Netlify/Cloudflare) are usually auto-detected, so the
-    // user-supplied value is undefined in exactly the case Task 11's
-    // serverless guardrail must catch. nitro.options.preset is only known
+    // user-supplied value is undefined in exactly the case the serverless
+    // guardrail in checkGuardrails (src/runtime/server/guardrails.ts) must
+    // catch. nitro.options.preset is only known
     // once nitro itself has finished resolving it, which is after this
     // setup() function returns — hence the nitro:init hook rather than
     // reading it here.
@@ -152,11 +191,11 @@ export default defineNuxtModule<ModuleOptions>({
     logger.info(`Role: ${role}`);
 
     if (nuxt.options.dev) {
-      const viewerUrl = `${cleanDoubleSlashes(
-        joinURL(withoutTrailingSlash(nuxt.options.devServer.url), "_concierge")
-      )}`;
-
-      logger.info(`Concierge Dashboard: ${withTrailingSlash(viewerUrl)}`);
+      // No URL, which is how #24 is fixed: setup() runs BEFORE the server
+      // listens, so nuxt.options.devServer.url is not yet correct here — it
+      // logged port 3000 whenever 3000 was taken. Pointing at the DevTools tab
+      // leaves no port to get wrong.
+      logger.info("Concierge dashboard: open the Concierge tab in Nuxt DevTools");
     }
   },
 });

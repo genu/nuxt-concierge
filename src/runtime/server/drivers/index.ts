@@ -1,4 +1,4 @@
-import type { BullmqOptions, DriverName } from '../../../options'
+import type { BullmqOptions, DriverName, MemoryOptions } from '../../../options'
 import { createSyncDriver } from './sync'
 import type { ConciergeDriver } from './types'
 
@@ -38,6 +38,8 @@ export interface CreateDriverOptions {
   connection?: { url?: string, host?: string, port?: number, password?: string }
   /** Partial so a caller can override just one field; missing fields fall back to defaults. */
   bullmq?: Partial<BullmqOptions>
+  /** Partial for the same reason as `bullmq` above. */
+  memory?: Partial<MemoryOptions>
 }
 
 export const createDriver = async (
@@ -49,7 +51,7 @@ export const createDriver = async (
       return createSyncDriver()
     case 'memory': {
       const { createMemoryDriver } = await import('./memory')
-      return createMemoryDriver()
+      return createMemoryDriver(opts.memory)
     }
     case 'bullmq': {
       const { createBullmqDriver } = await import('./bullmq')

@@ -27,9 +27,9 @@ export interface WorkerRecord {
   pid: number
   /**
    * The supervisor's actual configured role, including `web`. A `web`
-   * process's record used to be reported as `both`; Task 10's health
-   * endpoint reads this field directly, so misreporting it would be a lie
-   * a caller could act on.
+   * process's record used to be reported as `both`; the health endpoint
+   * (`src/runtime/server/routes/health.ts`) reads this field directly, so
+   * misreporting it would be a lie a caller could act on.
    */
   role: Role
   queues: string[]

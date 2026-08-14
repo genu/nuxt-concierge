@@ -4,7 +4,7 @@ import type { SupervisorState, WorkerRecord } from '../../src/runtime/server/typ
 
 const base = {
   role: 'both' as const,
-  capabilities: { persistent: true, crossProcess: true },
+  capabilities: { persistent: true, crossProcess: true, history: 'durable' as const },
   driverName: 'bullmq',
   queueCount: 1,
   isProduction: false,
@@ -26,7 +26,7 @@ describe('guardrails', () => {
       ...base,
       role: 'worker',
       driverName: 'memory',
-      capabilities: { persistent: false, crossProcess: false },
+      capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
     })).toThrow(/memory.*cannot be used with role "worker"/)
   })
 
@@ -38,7 +38,7 @@ describe('guardrails', () => {
       ...base,
       role: 'worker',
       driverName: 'memory',
-      capabilities: { persistent: false, crossProcess: false },
+      capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
     })
     const fatal = d.find(x => x.level === 'error')
     expect(fatal).toBeDefined()
@@ -54,7 +54,7 @@ describe('guardrails', () => {
       ...base,
       role: 'both',
       driverName: 'memory',
-      capabilities: { persistent: false, crossProcess: false },
+      capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
     })).not.toThrow()
   })
 
@@ -62,7 +62,7 @@ describe('guardrails', () => {
     const d = guardrailDiagnostics({
       ...base,
       isProduction: true,
-      capabilities: { persistent: false, crossProcess: true },
+      capabilities: { persistent: false, crossProcess: true, history: 'bounded' },
     })
     expect(d.some(x => x.level === 'warn' && /persist/i.test(x.message))).toBe(true)
     expect(d.some(x => x.level === 'error')).toBe(false)
@@ -89,7 +89,7 @@ describe('guardrails', () => {
     const d = guardrailDiagnostics({
       ...base,
       preset: 'vercel',
-      capabilities: { persistent: false, crossProcess: true },
+      capabilities: { persistent: false, crossProcess: true, history: 'bounded' },
     })
     expect(d.some(x => /serverless/i.test(x.message))).toBe(true)
   })

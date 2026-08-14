@@ -66,8 +66,12 @@ describe('validateOnEnqueue', () => {
   })
 
   it('includes full issue messages, because this error stays in the caller process', async () => {
+    // Every case below expects this promise to reject, never resolve.
+    // `.catch` alone leaves the awaited type as `void | JobPayloadInvalidError`
+    // (the success branch's `void` from `validateOnEnqueue`'s signature) — the
+    // trailing cast is what narrows it to the type every assertion needs.
     const error = await validateOnEnqueue(leakySchema, 'j', { to: 'a', mode: 'sideways' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     expect(error).toBeInstanceOf(JobPayloadInvalidError)
     expect(error.message).toContain('mode')
@@ -79,7 +83,7 @@ describe('validateOnEnqueue', () => {
 
   it('exposes structured issues so a route can map them to a 400', async () => {
     const error = await validateOnEnqueue(schema, 'j', { to: 1, mode: 'fast' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     expect(error.issues.length).toBeGreaterThan(0)
     expect(error.jobName).toBe('j')
@@ -106,8 +110,11 @@ describe('validateOnConsume', () => {
   })
 
   it('redacts issue messages but reports the path', async () => {
+    // Same reasoning as validateOnEnqueue's cases above: `validateOnConsume`'s
+    // success branch resolves to the schema's OUTPUT type here, not `void`,
+    // but the awaited union is just as unusable without the trailing cast.
     const error = await validateOnConsume(leakySchema, 'j', { to: 'a', mode: 'sideways' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     // Both halves are required. Asserting only the exclusion would pass on an
     // empty message; asserting only the inclusion would pass on a message
@@ -118,14 +125,14 @@ describe('validateOnConsume', () => {
 
   it('reports the issue count', async () => {
     const error = await validateOnConsume(schema, 'j', { to: 1, mode: 'nope' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     expect(error.message).toContain('2 issue')
   })
 
   it('keeps structured issues on the error even though the message omits them', async () => {
     const error = await validateOnConsume(leakySchema, 'j', { to: 'a', mode: 'sideways' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     // Redaction protects the SERIALISED message (BullMQ's failedReason).
     // In-process consumers can still inspect the detail.
@@ -134,7 +141,7 @@ describe('validateOnConsume', () => {
 
   it('classifies as a permanent failure through the drivers existing check', async () => {
     const error = await validateOnConsume(schema, 'j', { to: 1, mode: 'fast' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     expect(error.retryable).toBe(false)
     // The whole driver integration: no bullmq/memory change is needed because
@@ -150,7 +157,7 @@ describe('validateOnConsume', () => {
     // burn the entire attempt budget instead of dead-lettering on the first
     // attempt.
     const error = await validateOnConsume(throwingSchema, 'j', { anything: true })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     expect(error).toBeInstanceOf(JobPayloadInvalidError)
     expect(error.retryable).toBe(false)
@@ -158,7 +165,7 @@ describe('validateOnConsume', () => {
 
   it('does not leak the thrown error message (or any payload value) when a validator throws', async () => {
     const error = await validateOnConsume(throwingSchema, 'j', { secret: 'secret-payload-value-42' })
-      .catch((e: unknown) => e as JobPayloadInvalidError)
+      .catch((e: unknown) => e) as JobPayloadInvalidError
 
     // A thrown error has no issues array to redact selectively, so the whole
     // thrown message is omitted — same reasoning as the issues branch above:

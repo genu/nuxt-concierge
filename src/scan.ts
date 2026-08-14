@@ -17,9 +17,10 @@ export interface ScannedJob {
  * nothing and no error is raised. server/ lives at rootDir in both v3 and v4.
  * Credit: PR #10 by @gsxdsm.
  *
- * Owns both naming and duplicate detection, because Task 8 builds its
- * name -> queue route map directly from this list: the source of truth for
- * "what is this job called" has to live in one place.
+ * Owns both naming and duplicate detection, because the module's `jobFiles`
+ * map (`src/module.ts`, consumed by the registry endpoint) is built directly
+ * from this list: the source of truth for "what is this job called" has to
+ * live in one place.
  */
 export const scanJobs = async (): Promise<ScannedJob[]> => {
   const nuxt = useNuxt()

@@ -67,6 +67,21 @@ jobs:
       # playground's one config compiles, not that a wrong one is rejected.
       - run: pnpm typecheck:public
 
+      # Covers test/**/*.ts (#26) — neither `typecheck` (playground only) nor
+      # `typecheck:public` (test/types only) reached test/unit or
+      # test/lifecycle. This is what catches type errors in mock-heavy tests
+      # like the module registration cases, which a passing runtime test does
+      # not.
+      - run: pnpm typecheck:tests
+
+      # The dashboard SPA (client/) is its own Vite/vue-tsc program, outside
+      # every other typecheck script above: `typecheck` only walks the
+      # playground, `typecheck:public`/`typecheck:tests` only walk test/.
+      # `vite build` transpiles without checking types, so without this a
+      # type error in a panel ships silently and presents as a blank panel —
+      # the one client-facing surface this spec has zero browser tests for.
+      - run: pnpm typecheck:client
+
       - run: pnpm test
         env:
           # The retry conformance table runs its bullmq half only when a real
@@ -81,6 +96,31 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
 
       - run: pnpm prepack
+
+      # `nuxt-module-build` wraps unbuild, whose `clean: true` wipes the whole
+      # `dist/` directory — which is why `prepack` runs `build:client` LAST
+      # (see package.json). Nothing else guards that ordering: get it wrong
+      # and this step is the only thing standing between that regression and
+      # a published tarball with no dashboard (a 404 at the DevTools tab for
+      # every consumer).
+      #
+      # Deliberately NOT `npm pack --dry-run | grep dist/client`: `--dry-run`
+      # still RUNS `prepack` (npm's own lifecycle hook), and vite's build
+      # step unconditionally prints "../dist/client/index.html ..." to
+      # stdout the moment `build:client` runs — which it does even under the
+      # dangerous order, just before `nuxt-module-build build` wipes the
+      # directory back out. Grepping combined stdout for that text matches
+      # vite's build LOG, not the tarball manifest, so it cannot fail even
+      # when `dist/client` is empty at pack time — confirmed by deliberately
+      # reintroducing the dangerous order and watching that grep stay green
+      # while `dist/client` was verifiably empty on disk. Packing for real
+      # and listing the archive's actual contents with `tar` has no such log
+      # noise to false-positive on.
+      - name: Assert the published tarball contains the dashboard SPA
+        run: |
+          npm pack
+          tar -tzf nuxt-concierge-*.tgz | grep -q 'package/dist/client/'
+          rm -f nuxt-concierge-*.tgz
 
   # Publishes an installable preview build for every commit and PR.
   # Install with: pnpm add https://pkg.pr.new/nuxt-concierge@<sha>

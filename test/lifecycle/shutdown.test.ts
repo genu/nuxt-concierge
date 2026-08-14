@@ -1,27 +1,13 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
-import { execSync } from 'node:child_process'
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import {
   spawnApp, waitForReady, waitForActiveCount, waitForLogCount,
-  enqueue, readLog, waitForExit, cleanup, summarise, flushRedis, namespaceRedisUrl,
+  enqueue, readLog, waitForExit, cleanup, summarise, flushRedis,
   killAllSpawned, type AppHandle,
 } from './harness'
 
 const DRIVERS = (process.env.REDIS_URL ? ['memory', 'bullmq'] : ['memory']) as Array<'memory' | 'bullmq'>
 
 let app: AppHandle | undefined
-
-beforeAll(() => {
-  // Point every consumer (the build, `flushRedis`, and every spawned app) at
-  // a dedicated logical database rather than whatever REDIS_URL defaults to
-  // (0) — `flushRedis` runs FLUSHDB, which would otherwise wipe an
-  // operator's real data on a shared, non-ephemeral Redis. Mutating
-  // process.env here, before the build reads it, is what makes the
-  // playground's own `connection: { url: process.env.REDIS_URL }` bake in
-  // the namespaced URL too.
-  if (process.env.REDIS_URL) process.env.REDIS_URL = namespaceRedisUrl(process.env.REDIS_URL)
-
-  execSync('pnpm dev:build', { stdio: 'inherit', timeout: 300_000 })
-}, 320_000)
 
 // Every bullmq scenario shares one queue name in one Redis instance; several
 // scenarios deliberately crash processes mid-job. Without a flush, one
@@ -44,9 +30,10 @@ afterAll(() => {
   killAllSpawned()
 })
 
-// pnpm dev:build (nuxi build) can succeed while the resulting output still
-// fails to boot — that gap let a boot-breaking bug survive two review
-// cycles. This scenario spawns the real built artifact and fails loudly if
+// The playground build (nuxi build, run once for the whole lifecycle suite
+// in globalSetup.ts) can succeed while the resulting output still fails to
+// boot — that gap let a boot-breaking bug survive two review cycles. This
+// scenario spawns the real built artifact and fails loudly if
 // it never becomes ready, independent of any of the heavier drain
 // scenarios below. Uses the memory driver, so it needs no Redis.
 describe('boot smoke test', () => {

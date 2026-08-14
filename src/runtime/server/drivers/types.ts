@@ -5,6 +5,15 @@ export interface DriverCapabilities {
   persistent: boolean
   /** A process that runs no workers can still read this driver's data. */
   crossProcess: boolean
+  /**
+   * Whether terminal-state results survive, and for how long.
+   *
+   * The ONLY capability flag this SPI adds, because it is the only question
+   * the presence of `introspect` cannot answer. "These results may have been
+   * evicted" is information the dashboard must show, and `bounded` is not a
+   * degraded `durable` — it changes what the UI is allowed to claim.
+   */
+  history: 'durable' | 'bounded' | 'none'
 }
 
 export interface EnqueueOptions {
@@ -55,9 +64,98 @@ export interface Consumer {
   active: () => ActiveJob[]
 }
 
+/**
+ * The canonical job states, deliberately five members.
+ *
+ * BullMQ also has `paused`, `prioritized` and `waiting-children`. Admitting
+ * them would make `memory` fabricate three states to satisfy a union shaped by
+ * one driver's internals — which is exactly how `depth()` drifted in phase 1
+ * before its contract was written down. Driver-specific state belongs in
+ * `JobDetail.raw`, which the detail view may display and no code branches on.
+ */
+export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed'
+
+export interface QueueCounts {
+  waiting: number
+  active: number
+  completed: number
+  failed: number
+  delayed: number
+}
+
+export interface JobSummary {
+  id: string
+  name: string
+  queue: string
+  state: JobState
+  /**
+   * Attempts already MADE. Never translated to or from "retries" — that
+   * conversion is where an off-by-one hides.
+   */
+  attemptsMade: number
+  /** TOTAL attempts including the first, when the driver knows it. */
+  attempts?: number
+  createdAt: number
+  finishedAt?: number
+  failedReason?: string
+}
+
+export interface JobDetail extends JobSummary {
+  /**
+   * The RAW stored envelope, never a decoded payload.
+   *
+   * Decoding belongs to the API layer alone. `decodePayload` owns the
+   * `v`-version check AND an error message that deliberately reports `typeof`
+   * rather than content, because a payload routinely carries user data and the
+   * message reaches both the queue backend and the log stream. Three driver
+   * implementations of that path would be three chances to drift, and the
+   * drift would be a privacy leak rather than a wrong number.
+   */
+  envelope: unknown
+  stack?: string
+  /** Driver-specific extras. Display-only; nothing branches on this. */
+  raw?: Record<string, unknown>
+}
+
+export interface DriverIntrospection {
+  counts: (queue: string) => Promise<QueueCounts>
+  list: (
+    queue: string,
+    state: JobState,
+    page: { offset: number, limit: number },
+  ) => Promise<{ items: JobSummary[], total: number }>
+  get: (queue: string, id: string) => Promise<JobDetail | undefined>
+  /**
+   * Re-queues a failed job. Throws if it is not currently `failed`.
+   *
+   * PRESERVES the recorded attempt count rather than resetting it. This
+   * mirrors BullMQ's own `job.retry()`, which has no option to reset
+   * `attemptsMade` (installed version 5.63.0: `retry(state?: FinishedStatus)`,
+   * no `resetAttemptsMade`) — an exhausted job moved back to `waiting` runs
+   * its handler exactly ONE more time and then dead-letters again, rather
+   * than receiving a full fresh allowance of `attempts` runs. `bullmq` is the
+   * reference for this behaviour and `memory` is required to match it exactly
+   * (see the `attempts: 3` case in `introspection-conformance.test.ts`); a
+   * driver that resets the count instead would let a UI-triggered retry run
+   * far more times on one driver than another for the identical job.
+   */
+  retry: (queue: string, id: string) => Promise<void>
+}
+
 export interface ConciergeDriver {
   readonly name: string
   readonly capabilities: DriverCapabilities
+  /**
+   * Presence IS the capability. A driver either supports introspection or does
+   * not, as a type-level fact.
+   *
+   * The rejected alternative — boolean flags on `capabilities` alongside
+   * optional methods — permits a driver declaring support it lacks, or the
+   * reverse, and typechecks fine. Same move spec 3 made giving
+   * `validateOnEnqueue` a `void` return: make the inconsistent state
+   * unrepresentable rather than merely untested.
+   */
+  readonly introspect?: DriverIntrospection
 
   init: () => Promise<void>
   close: (force: boolean) => Promise<void>

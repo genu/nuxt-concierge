@@ -13,6 +13,7 @@ Queues, workers and background jobs for Nuxt, built on BullMQ.
 - An unauthenticated `/_concierge/health` endpoint for orchestrator readiness/liveness checks
 - A `memory` driver for zero-dependency local development, and a `sync` driver for tests
 - Guardrails that fail loudly at boot on common misconfiguration, rather than silently later
+- A dev-only dashboard in Nuxt DevTools for queue counts, workers, job history and retry
 
 ## Prerequisites
 
@@ -95,6 +96,34 @@ Drivers:
 | `sync`   | no | no | Runs handlers inline. For tests. |
 | `memory` | no | no | Async, in-process, zero dependencies. **Requires `role: 'both'`** — a boot guardrail refuses any other role, because there is no cross-process state for a `web`-only or `worker`-only process to share. Loses every queued job on process exit. |
 | `bullmq` | yes | yes | Backed by Redis. The only driver suitable for production. |
+
+#### `concierge.bullmq`
+
+```ts
+concierge: {
+  bullmq: {
+    maxStalledCount: 3,     // BullMQ's own default is 1, which fails a job
+                            // permanently after only two force-closes
+    stalledInterval: 30_000, // ms before a force-closed job is retried
+  },
+}
+```
+
+#### `concierge.memory`
+
+```ts
+concierge: {
+  memory: {
+    historyLimit: 100, // terminal-state jobs retained per queue, for the dashboard
+  },
+}
+```
+
+`historyLimit` exists solely so the dev dashboard has something to show for the `memory`
+driver — it is **not** a durability knob. The `memory` driver keeps no state across a
+process restart regardless of this setting; `historyLimit` only bounds how many
+completed/failed jobs it keeps *in memory* per queue before evicting the oldest, so a
+long-running dev session's job list doesn't grow without bound.
 
 ## Defining jobs
 
@@ -283,11 +312,48 @@ It stays reachable under `role: worker` even though every other route on that pr
 refused — orchestrators depend on it for liveness/readiness. Decide for yourself whether
 that warrants firewalling it at the network level; the module does not do this for you.
 
-### Queue Management UI
+## Dashboard
 
-The BullBoard dashboard is available at `/_concierge/` whenever `managementUI` is enabled
-and the active driver is `bullmq`. It returns 503 (rather than crashing) if the active
-driver is anything else, since there is nothing BullBoard can introspect.
+**Dev-only. There is no production dashboard, and no configuration option that adds one.**
+The dashboard's API routes and static assets are registered only when `nuxt.options.dev` is
+`true`, decided once at module setup — not by a runtime flag, an environment variable, or
+anything else a deployed process could be made to flip. This is deliberate: a queue
+dashboard with a retry button needs no authentication of its own specifically *because* it
+cannot be reached outside a local dev server.
+
+Open it from **Nuxt DevTools** — look for the "Concierge" tab — or visit `/_concierge/ui/`
+directly from your dev server's own base URL (e.g. `http://localhost:3000/_concierge/ui/`);
+both reach the same SPA. The module deliberately logs no URL for it, though: the dev
+server's own port is not yet known at the point the module logs its startup line, so
+printing one was previously wrong whenever port 3000 was taken.
+
+It shows, per queue: live counts by state (waiting/active/completed/failed/delayed), the
+worker processes currently attached (with a staleness flag once a heartbeat falls behind
+`heartbeatTtl`), a job list per state with decoded payloads, and the job registry (every
+discovered job, its queue, its schema vendor if any, and its effective attempts/backoff,
+plus the generated job-map `.d.ts`).
+
+The job list shows only the first page (25 jobs) per state — the SPA has no pagination
+control yet. The `/_concierge/api/queues/:queue/jobs` endpoint itself already accepts
+`offset`/`limit` query parameters (up to 100 per page); a paging control in the dashboard
+is a follow-up, not something this endpoint is missing.
+
+**Retry is the only write action the dashboard performs.** Everything else is read-only
+introspection. Retry re-queues a single failed job by ID; it does not delete, requeue in
+bulk, or edit a job's payload.
+
+Introspection is a capability of the active driver, not a fixed feature:
+
+- `bullmq` — full introspection, backed by Redis. Counts, worker list, job list/detail, and
+  retry all work.
+- `memory` — full introspection, backed by an in-process ring buffer. History is **bounded**
+  by `concierge.memory.historyLimit` (default 100 terminal-state jobs per queue, evicted
+  oldest-first) and **not durable** — a process restart loses it, same as every other piece
+  of `memory` driver state. The dashboard labels this explicitly rather than presenting it
+  as equivalent to `bullmq`'s history.
+- `sync` — no introspection. `sync` runs handlers inline and keeps no queue state at all;
+  the dashboard's panels show "this driver does not support introspection" rather than an
+  empty table, which is a different claim than "there are no jobs."
 
 ## Migrating from v1
 
@@ -322,22 +388,18 @@ v2 is a breaking rewrite of the public API and the process model.
    you need this module on a serverless web tier, point `connection` at a real Redis
    instance and run the worker role elsewhere.
 
-2. **Can I disable the Queue management UI in production?**
+2. **Can I enable the dashboard in production?**
 
-   It is already disabled by default in production. To enable it explicitly:
+   No, and there is no configuration option for it. The dashboard is registered only when
+   `nuxt.options.dev` is `true`, decided once at build time — not by a runtime flag, an
+   environment variable, or anything else a deployed process could be made to flip. See
+   [Dashboard](#dashboard).
 
-   ```ts
-   export default defineNuxtConfig({
-     concierge: {
-       connection: { url: process.env.REDIS_URL },
-       managementUI: true,
-     },
-   });
-   ```
+3. **Can I password protect the dashboard?**
 
-3. **Can I password protect the Queue management UI?**
-
-   Auth for the UI is out of scope of this module, but it can easily be done using the [Nuxt Security](https://nuxt-security.vercel.app/) module.
+   There is nothing to protect: the dashboard does not exist in a production build. In dev,
+   auth would be redundant with the fact that it is not reachable outside your own machine's
+   dev server.
 
 ## Development
 

@@ -1,11 +1,12 @@
 import { Queue, UnrecoverableError, Worker } from 'bullmq'
+import type { Job, JobType } from 'bullmq'
 import { Redis } from 'ioredis'
 import type { RedisOptions } from 'ioredis'
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
 import type { BullmqOptions } from '../../../options'
-import type { ConciergeDriver, Consumer } from './types'
+import type { ConciergeDriver, Consumer, JobState, JobSummary } from './types'
 import type { CreateDriverOptions } from './index'
 
 /** Matches memory.ts so log output from either driver is tagged the same way. */
@@ -83,6 +84,61 @@ export const createConnectionHealth = () => {
   }
 }
 
+/**
+ * BullMQ state name -> canonical JobState, or `undefined` for a state outside
+ * the canonical five.
+ *
+ * `prioritized` folds into `waiting` to agree with `depth()`, which already
+ * counts it as due work — a disagreement would make a job visible to the
+ * no-worker guardrail and invisible in the dashboard. `paused` and
+ * `waiting-children` return `undefined` rather than being folded anywhere:
+ * inventing a mapping would have the dashboard claim something false, and the
+ * caller filters them out.
+ */
+export const bullStateToJobState = (state: string): JobState | undefined => {
+  switch (state) {
+    case 'wait':
+    case 'waiting':
+    case 'prioritized':
+      return 'waiting'
+    case 'active': return 'active'
+    case 'completed': return 'completed'
+    case 'failed': return 'failed'
+    case 'delayed': return 'delayed'
+    default: return undefined
+  }
+}
+
+/** BullMQ's own job states for the canonical five, for `getJobs` queries. */
+const BULL_STATES: Record<JobState, JobType[]> = {
+  waiting: ['wait', 'prioritized'],
+  active: ['active'],
+  completed: ['completed'],
+  failed: ['failed'],
+  delayed: ['delayed'],
+}
+
+/**
+ * Projects a BullMQ job onto JobSummary. Exported and pure so the mapping is
+ * testable without a live Redis — the round trip is covered by the shared
+ * conformance table, which does need one.
+ */
+export const jobToSummary = (job: Job, queue: string, state: JobState): JobSummary => ({
+  // String, because BullMQ ids are numeric and JobSummary.id is a string
+  // across every driver. A numeric id would make a strict `get` comparison miss.
+  id: String(job.id),
+  name: job.name,
+  queue,
+  state,
+  attemptsMade: job.attemptsMade,
+  attempts: job.opts?.attempts,
+  createdAt: job.timestamp,
+  // undefined rather than 0: a 0 renders as the epoch, which reads as a real
+  // timestamp rather than an absent one.
+  finishedAt: job.finishedOn ?? undefined,
+  failedReason: job.failedReason ?? undefined,
+})
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
   const bull = resolveBullmqOptions(opts.bullmq)
@@ -118,7 +174,81 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
 
   return {
     name: 'bullmq',
-    capabilities: { persistent: true, crossProcess: true },
+    capabilities: { persistent: true, crossProcess: true, history: 'durable' },
+
+    introspect: {
+      counts: async (queue) => {
+        const c = await queueOf(queue).getJobCounts(
+          'wait', 'prioritized', 'active', 'completed', 'failed', 'delayed',
+        )
+        return {
+          // wait + prioritized, matching both depth() and
+          // bullStateToJobState. Omitting prioritized would undercount, since
+          // BullMQ 5 puts explicitly-prioritised jobs in their own state.
+          waiting: (c.wait ?? 0) + (c.prioritized ?? 0),
+          active: c.active ?? 0,
+          completed: c.completed ?? 0,
+          failed: c.failed ?? 0,
+          delayed: c.delayed ?? 0,
+        }
+      },
+
+      list: async (queue, state, page) => {
+        const q = queueOf(queue)
+        const types = BULL_STATES[state]
+        const [jobs, total] = await Promise.all([
+          // BullMQ's getJobs applies the SAME start/end range to EVERY type
+          // key independently (getRanges-1.lua does one LRANGE/ZRANGE per
+          // key, then concatenates) rather than treating `types` as one
+          // globally-ordered, globally-paginated sequence. `page.offset`
+          // therefore must NOT be passed as the Redis range start — that
+          // would mean "skip N of EACH type", not "skip N of the merged
+          // sequence", and a type with fewer entries than `page.offset` would
+          // have every one of its jobs silently skipped on every page. The
+          // range start is fixed at 0, and BOTH the offset and the limit are
+          // applied afterwards, locally, to the concatenated result — this
+          // over-fetches up to `offset + limit` rows per type on every page,
+          // which is fine and intended: `limit` is capped at 100 for a dev
+          // dashboard, so the over-fetch is small. Do not "optimize" the
+          // offset back into the Redis range; see the pagination test in
+          // bullmq-introspect.test.ts for why it must stay this way.
+          q.getJobs(types, 0, page.offset + page.limit - 1),
+          q.getJobCountByTypes(...types),
+        ])
+        return {
+          items: jobs.filter(Boolean)
+            .map(j => jobToSummary(j, queue, state))
+            .slice(page.offset, page.offset + page.limit),
+          total,
+        }
+      },
+
+      get: async (queue, id) => {
+        const job = await queueOf(queue).getJob(id)
+        if (!job) return undefined
+
+        const bullState = await job.getState()
+        const state = bullStateToJobState(bullState)
+        // A job in `paused` or `waiting-children` has no canonical state, and
+        // `getState()` can also return `unknown` (BullMQ's value when the job
+        // is not found in any known set, e.g. removed concurrently with this
+        // read). All three fall back to `waiting` ONLY here, in the detail
+        // view, where `raw.bullState` carries the true value for display —
+        // never in `list`, whose queries are keyed by canonical state.
+        return {
+          ...jobToSummary(job, queue, state ?? 'waiting'),
+          envelope: job.data,
+          stack: job.stacktrace?.join('\n') || undefined,
+          raw: { bullState, opts: job.opts as Record<string, unknown> },
+        }
+      },
+
+      retry: async (queue, id) => {
+        const job = await queueOf(queue).getJob(id)
+        if (!job) throw new Error(`[nuxt-concierge] no job "${id}" on queue "${queue}" to retry.`)
+        await job.retry()
+      },
+    },
 
     init: async () => { client() },
     isHealthy: health.isHealthy,

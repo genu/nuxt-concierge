@@ -30,6 +30,19 @@ export interface BullmqOptions {
   stalledInterval: number
 }
 
+export interface MemoryOptions {
+  /**
+   * Terminal-state records retained per queue, evicted oldest-first.
+   *
+   * The memory driver is not durable and this is not a durability knob — it
+   * exists so the dev dashboard has something to show, since a failed job was
+   * previously logged and dropped. `capabilities.history` is `bounded`
+   * precisely so the UI can say so rather than implying these results are
+   * complete.
+   */
+  historyLimit: number
+}
+
 /** Retry policy applied to any job that does not declare its own. */
 export interface JobDefaults {
   /** TOTAL attempts including the first, matching BullMQ. */
@@ -62,6 +75,7 @@ export interface ModuleOptions {
   role?: Role
   worker?: Partial<WorkerOptions>
   bullmq?: Partial<BullmqOptions>
+  memory?: Partial<MemoryOptions>
   /**
    * Partial at BOTH levels, deliberately. `Partial<JobDefaults>` alone makes
    * `backoff` optional while still demanding both of its members, so a valid
@@ -78,8 +92,6 @@ export interface ModuleOptions {
     attempts?: number
     backoff?: Partial<BackoffOptions>
   }
-  /** BullBoard dashboard. Unchanged in phase 1; replaced in spec 4. */
-  managementUI?: boolean
 }
 
 /**
@@ -93,8 +105,12 @@ export interface ResolvedConciergeOptions {
   role?: Role
   worker: WorkerOptions
   bullmq: BullmqOptions
+  memory: MemoryOptions
   defaults: JobDefaults
-  managementUI?: boolean
+  /** Dev-only, written by the module. Absolute paths; never present in production. */
+  jobFiles?: Record<string, string>
+  /** Dev-only, written by the module. Absolute path; never present in production. */
+  generatedTypesPath?: string
 }
 
 export const moduleDefaults: ResolvedConciergeOptions = {
@@ -111,15 +127,40 @@ export const moduleDefaults: ResolvedConciergeOptions = {
     maxStalledCount: 3,
     stalledInterval: 30_000,
   },
+  memory: {
+    historyLimit: 100,
+  },
   defaults: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 1000 },
   },
-  managementUI: process.env.NODE_ENV === 'development',
+}
+
+/**
+ * Validated on its own, loud at boot, consistent with how `resolveRole`
+ * throws on a bad role (src/runtime/server/role.ts) — a config error must be
+ * a startup failure, not a mystery hang.
+ *
+ * `memory.ts`'s eviction loop is `while (bucket.length > historyLimit)
+ * bucket.shift()`. A negative value never terminates: `shift()` on an empty
+ * array leaves `length` at 0, and `0 > -1` stays true forever, hanging the
+ * worker on its first terminal job. `0` would silently discard every
+ * record, and a non-integer (e.g. `1.5`) would retain an off-by-one count —
+ * neither is coerced, both are rejected outright, so a config mistake is
+ * visible immediately rather than shipped.
+ */
+const validateHistoryLimit = (historyLimit: number): void => {
+  if (!Number.isInteger(historyLimit) || historyLimit < 1) {
+    throw new Error(
+      `[nuxt-concierge] concierge.memory.historyLimit must be a positive integer, received ${historyLimit}.`,
+    )
+  }
 }
 
 export const resolveModuleOptions = (options: ModuleOptions): ResolvedConciergeOptions => {
   const merged = defu(options, moduleDefaults) as ResolvedConciergeOptions
+
+  validateHistoryLimit(merged.memory.historyLimit)
 
   return {
     ...merged,
