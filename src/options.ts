@@ -30,6 +30,19 @@ export interface BullmqOptions {
   stalledInterval: number
 }
 
+export interface MemoryOptions {
+  /**
+   * Terminal-state records retained per queue, evicted oldest-first.
+   *
+   * The memory driver is not durable and this is not a durability knob — it
+   * exists so the dev dashboard has something to show, since a failed job was
+   * previously logged and dropped. `capabilities.history` is `bounded`
+   * precisely so the UI can say so rather than implying these results are
+   * complete.
+   */
+  historyLimit: number
+}
+
 /** Retry policy applied to any job that does not declare its own. */
 export interface JobDefaults {
   /** TOTAL attempts including the first, matching BullMQ. */
@@ -62,6 +75,7 @@ export interface ModuleOptions {
   role?: Role
   worker?: Partial<WorkerOptions>
   bullmq?: Partial<BullmqOptions>
+  memory?: Partial<MemoryOptions>
   /**
    * Partial at BOTH levels, deliberately. `Partial<JobDefaults>` alone makes
    * `backoff` optional while still demanding both of its members, so a valid
@@ -93,6 +107,7 @@ export interface ResolvedConciergeOptions {
   role?: Role
   worker: WorkerOptions
   bullmq: BullmqOptions
+  memory: MemoryOptions
   defaults: JobDefaults
   managementUI?: boolean
 }
@@ -110,6 +125,9 @@ export const moduleDefaults: ResolvedConciergeOptions = {
   bullmq: {
     maxStalledCount: 3,
     stalledInterval: 30_000,
+  },
+  memory: {
+    historyLimit: 100,
   },
   defaults: {
     attempts: 3,

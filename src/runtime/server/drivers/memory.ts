@@ -1,5 +1,6 @@
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
+import type { MemoryOptions } from '../../../options'
 import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
 import type { ConciergeDriver, Consumer } from './types'
 
@@ -18,6 +19,7 @@ interface QueuedJob {
   /** TOTAL attempts including the first. `undefined` means one attempt. */
   attempts?: number
   backoff?: BackoffOptions
+  createdAt: number
 }
 
 /**
@@ -44,22 +46,74 @@ export const backoffDelay = (
   return Math.round(2 ** (retryIndex - 1) * backoff.delay)
 }
 
+/** Mirrors moduleDefaults.memory in src/options.ts. */
+const MEMORY_DEFAULTS: MemoryOptions = { historyLimit: 100 }
+
+export const resolveMemoryOptions = (opts?: Partial<MemoryOptions>): MemoryOptions => ({
+  historyLimit: opts?.historyLimit ?? MEMORY_DEFAULTS.historyLimit,
+})
+
+/**
+ * A finished job, retained so the dashboard has something to show. Holds the
+ * ENVELOPE, not a decoded payload: decoding is the API layer's job (see
+ * JobDetail.envelope), and retaining the envelope is also what lets
+ * `introspect.retry` re-enqueue the original bytes rather than a re-encoded
+ * round trip.
+ */
+interface TerminalRecord {
+  id: string
+  name: string
+  queue: string
+  state: 'completed' | 'failed'
+  envelope: { v: number, payload: string }
+  attemptsMade: number
+  attempts?: number
+  backoff?: BackoffOptions
+  createdAt: number
+  finishedAt: number
+  failedReason?: string
+  stack?: string
+}
+
 /**
  * In-process queue with a real claim loop so delays, retries and concurrency
  * behave like the persistent driver. Loses everything on process death — that
  * is acceptable for a dev/test driver and is stated loudly in the docs.
  */
-export const createMemoryDriver = (): ConciergeDriver => {
+export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriver => {
+  const { historyLimit } = resolveMemoryOptions(opts)
   const pending = new Map<string, QueuedJob[]>()
   const handlers = new Map<string, JobHandler>()
   const records = new Map<string, { record: WorkerRecord, expiresAt: number }>()
   const consumers: Consumer[] = []
+  /**
+   * Terminal records per queue, oldest first. An array rather than a Map
+   * because eviction is positional (oldest-first) and the sizes involved are
+   * ~100 — a linear scan in `get` is cheaper than maintaining a second index
+   * that a `shift()` could desynchronise.
+   */
+  const history = new Map<string, TerminalRecord[]>()
+  /** Live jobs by id, for `counts`/`list`/`get` of non-terminal states. */
+  const inFlight = new Map<string, ActiveJob>()
   let counter = 0
 
   const key = (queue: string, name: string) => `${queue}::${name}`
   const queueOf = (queue: string) => {
     if (!pending.has(queue)) pending.set(queue, [])
     return pending.get(queue)!
+  }
+
+  const historyOf = (queue: string) => {
+    if (!history.has(queue)) history.set(queue, [])
+    return history.get(queue)!
+  }
+
+  const remember = (record: TerminalRecord) => {
+    const bucket = historyOf(record.queue)
+    bucket.push(record)
+    // Oldest-first eviction. A `while` rather than a single `shift()` so a
+    // lowered historyLimit converges instead of leaking one record per call.
+    while (bucket.length > historyLimit) bucket.shift()
   }
 
   return {
@@ -72,6 +126,8 @@ export const createMemoryDriver = (): ConciergeDriver => {
     close: async (force) => {
       await Promise.all(consumers.splice(0).map(c => c.close(force)))
       pending.clear()
+      history.clear()
+      inFlight.clear()
     },
 
     registerHandler: (queue, name, handler) => {
@@ -89,6 +145,7 @@ export const createMemoryDriver = (): ConciergeDriver => {
         runAt: Date.now() + (job.delay ?? 0),
         attempts: job.attempts,
         backoff: job.backoff,
+        createdAt: Date.now(),
       })
       return { id }
     },
@@ -104,6 +161,7 @@ export const createMemoryDriver = (): ConciergeDriver => {
 
       const run = async (job: QueuedJob) => {
         active.set(job.id, { jobId: job.id, queue, name: job.name, startedAt: Date.now() })
+        inFlight.set(job.id, { jobId: job.id, queue, name: job.name, startedAt: Date.now() })
         try {
           const handler = resolveHandler(job.name)
           if (!handler) throw new Error(`[nuxt-concierge] no handler for "${job.name}" on "${queue}"`)
@@ -114,6 +172,19 @@ export const createMemoryDriver = (): ConciergeDriver => {
             queue,
             attempt: job.attempt,
             payload: decodePayload(job.envelope),
+          })
+
+          remember({
+            id: job.id,
+            name: job.name,
+            queue,
+            state: 'completed',
+            envelope: job.envelope,
+            attemptsMade: job.attempt,
+            attempts: job.attempts,
+            backoff: job.backoff,
+            createdAt: job.createdAt,
+            finishedAt: Date.now(),
           })
         }
         catch (error) {
@@ -150,10 +221,26 @@ export const createMemoryDriver = (): ConciergeDriver => {
               ? 'failed permanently and will not be retried'
               : `failed after ${job.attempt} attempt(s)`
             logger.error(`[${queue}] job "${job.name}" (${job.id}) ${reason}`, error)
+
+            remember({
+              id: job.id,
+              name: job.name,
+              queue,
+              state: 'failed',
+              envelope: job.envelope,
+              attemptsMade: job.attempt,
+              attempts: job.attempts,
+              backoff: job.backoff,
+              createdAt: job.createdAt,
+              finishedAt: Date.now(),
+              failedReason: error instanceof Error ? error.message : String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+            })
           }
         }
         finally {
           active.delete(job.id)
+          inFlight.delete(job.id)
         }
       }
 
