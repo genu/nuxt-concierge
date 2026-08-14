@@ -304,17 +304,19 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
     enqueue: async (queue, job) => {
       const q = queueOf(queue)
 
-      // Read the current holder of the dedup key BEFORE adding.
+      // Read the current holder of the dedup key BEFORE adding. BullMQ's
+      // `add()` returns the EXISTING job when an enqueue is suppressed and
+      // offers no flag of its own — nothing on the returned job distinguishes
+      // "you created this" from "this already existed", because the id is the
+      // returned job's id either way. Comparing against the holder captured
+      // beforehand is the only check available.
       //
-      // `q.keys.de` is BullMQ's own dedup key base (prefix + queue name),
-      // exposed as the typed `KeysMap` on `QueueBase` and used by
-      // `Scripts.addJob` itself to build `${keys.de}:${deduplicationId}`
-      // (scripts.js:139). Reading from there rather than hardcoding
-      // `bull:<queue>:de:` means a prefix change cannot silently make this
-      // read the wrong key and report every suppressed enqueue as fresh —
-      // which would be a wrong `deduplicated` flag with no other symptom.
+      // `getDeduplicationJobId` is BullMQ's own public accessor for exactly
+      // this key (`QueueGetters`, which `Queue` extends); it does the same GET
+      // this driver would otherwise hand-roll, without depending on the
+      // internal key layout.
       const before = job.dedup
-        ? await client().get(`${q.keys.de}:${job.dedup.id}`)
+        ? await q.getDeduplicationJobId(job.dedup.id)
         : null
 
       const added = await q.add(job.name, encodePayload(job.payload), bullmqAddOptions(job))

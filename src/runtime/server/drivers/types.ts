@@ -190,6 +190,20 @@ export interface EnqueueResult {
    * deliberately not copied: silent deduplication turns "why didn't my job
    * run?" into a debugging session. `sync` always reports `false` — it
    * executes inline and does not deduplicate, exactly as it does not retry.
+   *
+   * KNOWN LIMITATION, one-directional. On the `bullmq` driver the check is a
+   * read of the dedup key followed by the add — two round trips — so two
+   * callers racing on the same key can both read an empty key, and the loser
+   * reports `deduplicated: false` for an enqueue that was in fact suppressed.
+   * The error only ever runs that way: a fresh enqueue is never reported as
+   * deduplicated, because BullMQ's ids are monotonic per queue, so a stale key
+   * holder can never equal a newly created job's id.
+   *
+   * The consequence is a caller that believes it created a job when it did
+   * not. No job is lost or double-run — the deduplication itself is atomic
+   * inside BullMQ's Lua; it is only this REPORTING that can be stale.
+   * `memory` has no equivalent race because its check-and-write is
+   * synchronous with no `await` between them.
    */
   deduplicated: boolean
 }

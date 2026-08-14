@@ -216,9 +216,10 @@ describe('bullmqAddOptions', () => {
   })
 
   it('omits deduplication entirely when the job declares none', () => {
-    // `undefined` rather than `{}`: BullMQ branches on the option's presence,
-    // and an empty object with no `id` would take the deduplicate path with an
-    // undefined key.
+    // `undefined` rather than `{}`: BullMQ's check is truthiness
+    // (`if (this.opts.deduplication)`), so `deduplication: undefined` behaves
+    // identically to an omitted key — but a truthy empty object would still
+    // take the deduplicate path, with an undefined `id`.
     expect(bullmqAddOptions({ name: 'j', payload: {} }).deduplication).toBeUndefined()
   })
 
