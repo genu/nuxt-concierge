@@ -61,32 +61,47 @@ export const canonicalize = (value: unknown): string => {
     .map(([k, v]) => `${canonicalize(k)}=${canonicalize(v)}`)
     .sort()
 
-  const proto = Object.getPrototypeOf(value)
-  if (proto === Object.prototype || proto === null) return `o:{${entries.join(',')}}`
-
-  // A non-plain object. The BRAND alone is not enough: a type whose data lives
-  // in internal slots rather than own enumerable properties — URL,
-  // URLSearchParams, a boxed primitive — has no entries at all, so every
-  // instance of it would share one string. That was this module's original
-  // defect, found again one type-family later.
-  //
-  // devalue is this project's serializer and therefore the authority on what a
-  // payload can even contain, so its own output is the value encoding here.
-  // The types it supports are exactly the types that can reach a queue, and
-  // for these leaf types its output is deterministic — there is no key
-  // ordering to vary, and every ordered container (Map, Set, Array, plain
-  // object) was handled by a branch above and never reaches this line.
-  //
-  // devalue throws on an arbitrary non-POJO (an Error, a class instance).
-  // Such a payload cannot be enqueued at all, so its encoding cannot cause a
-  // real collision — the brand plus canonicalized entries is a safe last
-  // resort, and it keeps this function total rather than throwing at enqueue.
   const brand = Object.prototype.toString.call(value)
+  const proto = Object.getPrototypeOf(value)
+  const isPlain = proto === Object.prototype || proto === null
+
+  // Own enumerable entries come first, always, because sorting them is
+  // order-safe by construction. Only a value with NO such entries needs help,
+  // and that is exactly the internal-slot types — URL, URLSearchParams, a
+  // boxed primitive — whose value `Object.entries` cannot see.
+  //
+  // This ordering matters. Reaching for devalue FIRST (as an earlier version
+  // did) hands it objects it walks with an unsorted `for...in`, because
+  // devalue's own plain-object test is shape-based and laxer than the identity
+  // test below — so an object in the gap between the two (a two-level
+  // null-prototype chain, a cross-realm plain object) came back order-
+  // sensitive. That is the very bug this module exists to prevent, arriving
+  // through the fix for a different instance of it.
+  //
+  // The brand still separates a class instance from a plain object with the
+  // same entries; it is only the VALUE encoding that devalue supplies.
+  if (entries.length > 0) {
+    return isPlain ? `o:{${entries.join(',')}}` : `c:${brand}:{${entries.join(',')}}`
+  }
+
+  if (isPlain) return 'o:{}'
+
+  // No own enumerable entries and not plain: the value lives in internal
+  // slots. devalue is this project's serializer and therefore the authority on
+  // what a payload may contain at all, and for these LEAF types its output is
+  // deterministic — there is no traversal order to vary, which is precisely
+  // why delegating is safe here and was not safe above.
+  //
+  // devalue throws on an arbitrary non-POJO (an Error, a class instance with
+  // no own enumerable fields). Such a payload cannot be enqueued, so its
+  // encoding cannot cause a real collision; the brand alone keeps it from
+  // colliding with a plain `{}` or a differently-branded type, and the catch
+  // keeps this function total rather than throwing at enqueue time.
   try {
     return `c:${brand}:${stringify(value)}`
   }
   catch {
-    return `c:${brand}:{${entries.join(',')}}`
+    return `c:${brand}:{}`
   }
 }
 

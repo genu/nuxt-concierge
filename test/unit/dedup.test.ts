@@ -125,6 +125,44 @@ describe('canonicalize', () => {
     expect(canonicalize(new Point(1))).toBe(canonicalize(new Point(1)))
     expect(canonicalize(new Point(1))).not.toBe(canonicalize(new Point(2)))
   })
+
+  it('is insensitive to key order for an object with an inherited prototype chain', () => {
+    // Two logically-equal payloads sharing a non-Object.prototype, non-null
+    // prototype. These route past the plain-object check, so they exercise the
+    // branded path — which must still sort its entries. An implementation that
+    // delegated this value to a serializer with an insertion-order walk would
+    // return different keys and silently stop deduplicating.
+    const base = Object.create(null) as object
+    const first = Object.create(base) as Record<string, unknown>
+    first.a = 1
+    first.b = 2
+    const second = Object.create(base) as Record<string, unknown>
+    second.b = 2
+    second.a = 1
+
+    expect(canonicalize(first)).toBe(canonicalize(second))
+  })
+
+  it('still distinguishes differing values on an inherited prototype chain', () => {
+    // Paired with the case above: an encoding that ignored entries entirely
+    // would satisfy it.
+    const base = Object.create(null) as object
+    const first = Object.create(base) as Record<string, unknown>
+    first.a = 1
+    const second = Object.create(base) as Record<string, unknown>
+    second.a = 2
+
+    expect(canonicalize(first)).not.toBe(canonicalize(second))
+  })
+
+  it('distinguishes an entry-bearing class instance from a plain object with the same entries', () => {
+    // Regression guard for the round-1 finding, now travelling through the
+    // entries-first path rather than the devalue path.
+    class Point {
+      constructor(readonly x: number) {}
+    }
+    expect(canonicalize(new Point(1))).not.toBe(canonicalize({ x: 1 }))
+  })
 })
 
 describe('defaultDedupId', () => {
