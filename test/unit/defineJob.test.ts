@@ -120,3 +120,53 @@ describe('defineJob consumer-side validation', () => {
     await expect(job.run(ctx(undefined))).rejects.toThrow('handler blew up')
   })
 })
+
+describe('defineJob cron', () => {
+  it('resolves the string shorthand to a full spec', () => {
+    const job = defineJob({ cron: '0 9 * * *', handler: async () => {} })
+    expect(job.cron).toEqual({ expression: '0 9 * * *', tz: 'UTC' })
+  })
+
+  it('keeps an explicit timezone and static payload', () => {
+    const job = defineJob({
+      cron: { expression: '0 9 * * MON', tz: 'America/Toronto', payload: { scope: 'weekly' } },
+      handler: async () => {},
+    })
+    expect(job.cron).toEqual({
+      expression: '0 9 * * MON', tz: 'America/Toronto', payload: { scope: 'weekly' },
+    })
+  })
+
+  it('throws at definition time on a bad expression', () => {
+    expect(() => defineJob({ cron: 'nope', handler: async () => {} }))
+      .toThrow(/not a valid cron expression/)
+  })
+
+  it('leaves cron undefined for an ordinary job', () => {
+    expect(defineJob({ handler: async () => {} }).cron).toBeUndefined()
+  })
+})
+
+describe('defineJob unique', () => {
+  it('resolves `true` to lock mode', () => {
+    expect(defineJob({ unique: true, handler: async () => {} }).unique).toEqual({})
+  })
+
+  it('keeps a ttl for throttle mode', () => {
+    expect(defineJob({ unique: { ttl: 60_000 }, handler: async () => {} }).unique)
+      .toEqual({ ttl: 60_000 })
+  })
+
+  it('rejects debounce without a ttl', () => {
+    // `extend`/`replace` with no expiry is BullMQ's replace-with-no-expiry
+    // branch — a lock that keeps moving, not a debounce. Rejecting it at
+    // definition time is what makes the combination unrepresentable rather
+    // than quietly reinterpreted.
+    expect(() => defineJob({ unique: { debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+  })
+
+  it('leaves unique undefined for an ordinary job', () => {
+    expect(defineJob({ handler: async () => {} }).unique).toBeUndefined()
+  })
+})

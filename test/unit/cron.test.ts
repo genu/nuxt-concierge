@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import {
   CONCIERGE_SCHEDULE_PREFIX,
   CRON_DEFAULT_TZ,
@@ -6,7 +7,9 @@ import {
   planReconciliation,
   resolveCron,
   schedulerIdFor,
+  validateCronPayloads,
 } from '../../src/runtime/server/cron'
+import { defineJob } from '../../src/runtime/server/handlers/defineJob'
 
 describe('resolveCron', () => {
   it('accepts the string shorthand and defaults the timezone to UTC', () => {
@@ -130,5 +133,52 @@ describe('planReconciliation', () => {
     })
     expect(plan.upserts).toEqual([])
     expect(plan.removals.sort()).toEqual([schedulerIdFor('a'), schedulerIdFor('b')].sort())
+  })
+})
+
+describe('validateCronPayloads', () => {
+  it('accepts a static payload that satisfies the job schema', async () => {
+    const job = defineJob({
+      input: z.object({ scope: z.string() }),
+      cron: { expression: '0 9 * * *', payload: { scope: 'weekly' } },
+      handler: async () => {},
+    })
+    await expect(validateCronPayloads([job])).resolves.toBeUndefined()
+  })
+
+  it('throws at boot when the static payload violates the schema', async () => {
+    // Without this, spec 3's consumer-side validation classifies the failure
+    // as PERMANENT, so the job dead-letters on every tick forever and nothing
+    // about the symptom points at the schedule.
+    const job = defineJob({
+      name: 'digest',
+      input: z.object({ scope: z.string() }),
+      cron: { expression: '0 9 * * *', payload: { scope: 42 } },
+      handler: async () => {},
+    })
+    await expect(validateCronPayloads([job])).rejects.toThrow(/digest/)
+  })
+
+  it('throws when a schema-bearing cron job supplies no payload at all', async () => {
+    const job = defineJob({
+      name: 'digest',
+      input: z.object({ scope: z.string() }),
+      cron: '0 9 * * *',
+      handler: async () => {},
+    })
+    await expect(validateCronPayloads([job])).rejects.toThrow(/digest/)
+  })
+
+  it('ignores a cron job with no schema', async () => {
+    const job = defineJob({ cron: '0 9 * * *', handler: async () => {} })
+    await expect(validateCronPayloads([job])).resolves.toBeUndefined()
+  })
+
+  it('ignores a schema-bearing job with no cron', async () => {
+    // The ordinary case: payloads come from enqueue callers and are validated
+    // there. Asserting it explicitly stops an implementation that validates
+    // every job's schema against `undefined` at boot.
+    const job = defineJob({ input: z.object({ scope: z.string() }), handler: async () => {} })
+    await expect(validateCronPayloads([job])).resolves.toBeUndefined()
   })
 })

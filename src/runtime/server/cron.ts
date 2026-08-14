@@ -5,8 +5,9 @@
 // the named form and gets away with it only because Node resolves BullMQ's CJS
 // build. Verified by direct execution; do not "tidy" this back.
 import cronParser from 'cron-parser'
-import type { CronSpec } from './types'
+import type { AnyJobDefinition, CronSpec } from './types'
 import type { ScheduleSpec, ScheduleSummary } from './drivers/types'
+import { formatIssuePath } from './validate'
 
 const { parseExpression } = cronParser
 
@@ -124,5 +125,46 @@ export const planReconciliation = (
       .filter(s => s.id.startsWith(CONCIERGE_SCHEDULE_PREFIX))
       .filter(s => !declaredIds.has(s.id))
       .map(s => s.id),
+  }
+}
+
+/**
+ * Boot-time check that every scheduled job's STATIC payload satisfies its own
+ * `input` schema.
+ *
+ * Build time cannot do this: spec 3 established that validation requires
+ * EXECUTING a schema, which is exactly why AST extraction was dropped rather
+ * than deferred. Boot can, because the schema is a live object by then.
+ *
+ * The failure this prevents is nasty and silent-adjacent: consumer-side
+ * validation throws `JobPayloadInvalidError` with `retryable = false`, so both
+ * drivers classify it as PERMANENT. A schema-violating cron payload therefore
+ * dead-letters on every single tick, forever, and the failed job says nothing
+ * about a schedule being the cause.
+ *
+ * A startup error, consistent with how `resolveRole` and
+ * `validateHistoryLimit` already treat config mistakes.
+ */
+export const validateCronPayloads = async (jobs: AnyJobDefinition[]): Promise<void> => {
+  for (const job of jobs) {
+    if (!job.cron || !job.input) continue
+
+    const result = await job.input['~standard'].validate(job.cron.payload)
+    if (!result.issues) continue
+
+    // Issue MESSAGES are included here, unlike `validateOnConsume`'s. This
+    // text goes to the boot log of the process the developer is starting, from
+    // a payload written in their own source file — it never reaches the queue
+    // backend and carries no user data. Withholding detail here would just
+    // make a boot failure harder to fix.
+    const detail = result.issues
+      .map(issue => `${formatIssuePath(issue)}: ${issue.message}`)
+      .join('; ')
+
+    throw new Error(
+      `[nuxt-concierge] the cron payload for job "${job.name}" does not satisfy its own input `
+      + `schema — ${detail}. A scheduled job whose payload fails validation dead-letters on `
+      + `every tick, because payload validation failures are permanent by design.`,
+    )
   }
 }

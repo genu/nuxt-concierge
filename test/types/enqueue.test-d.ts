@@ -80,3 +80,17 @@ describe('typed enqueue', () => {
       .toEqualTypeOf<'send-email' | 'mail/archive'>()
   })
 })
+
+// A cron job is an ordinary map member with its payload type intact — which is
+// what makes dashboard run-now an `enqueue` call rather than a second write
+// path. Declaring `cron` must not collapse the payload to `unknown`, which is
+// exactly what would happen if the new option disturbed EnqueueInputOf's
+// two-parameter inference.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used below via `typeof digest`, a type-only reference
+const digest = defineJob({
+  input: z.object({ scope: z.string() }),
+  cron: { expression: '0 9 * * MON', payload: { scope: 'weekly' } },
+  handler: () => {},
+})
+
+expectTypeOf<EnqueueInputOf<typeof digest>>().toEqualTypeOf<{ scope: string }>()
