@@ -73,7 +73,7 @@ or silently behaviour-breaking.
 | `src/runtime/server/routes/api/schedules-list.ts` | `GET /_concierge/api/schedules` |
 | `src/runtime/server/routes/api/schedules-run.ts` | `POST /_concierge/api/schedules/:name/run` |
 | `client/src/panels/SchedulesPanel.vue` | The Schedules panel |
-| `test/unit/dedup.test.ts` | Canonical form and key derivation |
+| `test/unit/dedup.test.ts` | Default key derivation from the serialized envelope |
 | `test/unit/cron.test.ts` | Reconciliation planning, schedule resolution, boot validation |
 | `test/unit/drivers/memory-dedup.test.ts` | `memory` dedup internals |
 | `test/unit/drivers/memory-schedule.test.ts` | `memory` scheduling internals |

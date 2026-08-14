@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultDedupId, resolveDedup } from '../../src/runtime/server/dedup'
+import { decodePayload, encodePayload } from '../../src/runtime/server/envelope'
 
 describe('defaultDedupId', () => {
   it('is stable for an equal payload', () => {
@@ -49,11 +50,12 @@ describe('defaultDedupId', () => {
       .not.toBe(defaultDedupId('j', new URL('http://b.example.com')))
   })
 
-  it('distinguishes a URL subclass carrying its own property, by href', () => {
-    // THE regression that killed the canonical form. Under the sorted-entries
-    // design both of these collapsed to one key — two different webhooks, one
-    // silently suppressed. devalue serializes a URL subclass by href, so the
-    // envelope distinguishes them for free.
+  it('distinguishes a URL subclass by href', () => {
+    // The plain-URL case above with a subclass in place of URL — devalue
+    // brands on Object.prototype.toString, so a subclass serializes as its
+    // parent type and the href still separates them. Under the abandoned
+    // canonical form both of these collapsed to one key, because that design
+    // encoded the subclass by its OWN properties and never saw the href.
     class Webhook extends URL {
       readonly retries: number
       constructor(url: string, retries: number) {
@@ -63,6 +65,39 @@ describe('defaultDedupId', () => {
     }
     expect(defaultDedupId('j', new Webhook('http://a.example.com', 3)))
       .not.toBe(defaultDedupId('j', new Webhook('http://b.example.com', 3)))
+  })
+
+  it('collapses a URL subclass differing only in its own property — and that is correct', () => {
+    // devalue serializes a branded type by its brand's value and DROPS own
+    // properties, so these two enqueues would deliver an identical payload to
+    // the handler. Suppressing one is therefore not data loss; it is exactly
+    // what deduplication is for.
+    //
+    // This is the whole closure argument in one case: every driver round-trips
+    // the payload through the envelope before the handler sees it, so a key
+    // collision implies byte-identical delivery. Asserting the delivered value
+    // alongside the key is what makes that a demonstrated property rather than
+    // a claim in a comment.
+    class Webhook extends URL {
+      readonly retries: number
+      constructor(url: string, retries: number) {
+        super(url)
+        this.retries = retries
+      }
+    }
+    const a = new Webhook('http://a.example.com', 3)
+    const b = new Webhook('http://a.example.com', 9)
+
+    expect(defaultDedupId('j', a)).toBe(defaultDedupId('j', b))
+    expect(decodePayload(encodePayload(a))).toEqual(decodePayload(encodePayload(b)))
+  })
+
+  it('throws for a payload devalue cannot serialize', () => {
+    // The docstring claims this throws no earlier than it would anyway, since
+    // `driver.enqueue` calls `encodePayload` on the same value one step later.
+    // Asserting the message shape matters too: this text can reach a log, and
+    // the project's rule is that errors describe shape, never content.
+    expect(() => defaultDedupId('j', { cb: () => {} })).toThrow(/Cannot stringify a function/)
   })
 
   it('distinguishes Map contents and Set members', () => {

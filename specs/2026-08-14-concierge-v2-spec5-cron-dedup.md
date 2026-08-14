@@ -399,13 +399,14 @@ cross-realm `Map`/`Set`.
 
 Hashing the envelope has one dispatcher, so the gap cannot exist by construction.
 
-**The cost, stated plainly:** object key order affects the default key, so two call sites building
-the same logical payload with keys in a different order will not deduplicate against each other.
-Weighed against the alternative, this is the better failure. Order sensitivity means deduplication
-is *less effective* — the job runs twice, which every handler must already tolerate under
-at-least-once delivery. The bugs it replaces meant a job was *silently suppressed and never ran*.
-`uniqueId(payload)` remains the escape hatch for anyone who needs exact control, and it is what the
-README should point at for payloads assembled from more than one call site.
+**The cost, stated plainly:** two payloads that serialize differently do not deduplicate, which
+includes object key order, `Map`/`Set` insertion order, whether two equal sub-objects are the same
+reference or two, and whether a bag was built with `Object.create(null)`. Weighed against the
+alternative, this is the better failure. Order sensitivity means deduplication is *less effective*
+— the job runs twice, which every handler must already tolerate under at-least-once delivery. The
+bugs it replaces meant a job was *silently suppressed and never ran*. `uniqueId(payload)` remains
+the escape hatch for anyone who needs exact control, and it is what the README should point at for
+payloads assembled from more than one call site.
 
 For a cron job with no payload the key reduces to the name plus the hash of `undefined`, which is
 stable.
@@ -575,15 +576,18 @@ Dedup cases, one per mode plus the boundaries:
   The dedup key), and a test is what stops it from being silently "fixed" back into the canonical
   form that failed three times.
 - Exotic payload values are distinguished **by value** through the same path — two different
-  `Date`s, two different `RegExp`s, two different `URL`s, and a `URL` subclass carrying its own
-  property with two different hrefs. The last is the specific regression that killed the canonical
-  form; it must not come back.
+  `Date`s, two different `RegExp`s, two different `URL`s, and a `URL` subclass with two different
+  hrefs, and the collapse of two differing only in an own property. The former is the specific
+  regression that killed the canonical form and must not come back; the latter is correct — devalue
+  brands and drops own properties on a subclass, so the two enqueues would deliver an identical
+  payload, and suppressing one is what deduplication is for.
 - `sync` reports `deduplicated: false` and runs both.
 
 ### Unit
 
-- Canonical payload encoding, directly: key ordering, `Date`, `Map`, `Set`, `undefined`, nested
-  objects, and two structurally-equal-but-differently-constructed payloads.
+- Default key derivation, directly: equal payloads match, different payloads differ, and exotic
+  values (`Date`, `RegExp`, `URL`, `Map`, `Set`) are distinguished by value through the envelope.
+  The order sensitivity is asserted rather than tolerated.
 - Reconciliation logic as a pure function over (declared set, listed set) → (upserts, removals),
   so the sweep's set arithmetic is tested without a driver at all.
 - Boot-time cron payload validation: a valid payload boots, an invalid one throws, and a job with

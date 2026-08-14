@@ -22,13 +22,15 @@ import type { DedupOptions } from './drivers/types'
  * construction, and every exotic type devalue supports is distinguished by
  * value for free.
  *
- * The accepted cost: object key order affects the key, so two call sites
- * building the same logical payload in different orders will not deduplicate
- * against each other. That is the better failure — order sensitivity means
- * deduplication is less effective and the job runs twice, which every handler
- * must already tolerate under at-least-once delivery, whereas the bugs it
- * replaces meant a job was silently suppressed and never ran. `uniqueId` is the
- * escape hatch for payloads assembled from more than one call site.
+ * The accepted cost: two payloads that serialize differently do not
+ * deduplicate, which includes object key order, Map/Set insertion order,
+ * whether two equal sub-objects are the same reference or two, and whether a
+ * bag was built with `Object.create(null)`. That is the better failure —
+ * order sensitivity means deduplication is less effective and the job runs
+ * twice, which every handler must already tolerate under at-least-once
+ * delivery, whereas the bugs it replaces meant a job was silently suppressed
+ * and never ran. `uniqueId` is the escape hatch for payloads assembled from
+ * more than one call site.
  *
  * Hashed rather than embedded whole because the id becomes a Redis key suffix,
  * and an unbounded payload would make an unbounded key.
@@ -36,6 +38,21 @@ import type { DedupOptions } from './drivers/types'
  * A payload devalue cannot serialize throws HERE rather than one line later in
  * `driver.enqueue`, which already calls `encodePayload` on the same value — the
  * same error, the same call site, marginally earlier.
+ *
+ * Why hashing the STORED form is sound, and not merely convenient: all three
+ * drivers round-trip the payload through the envelope before the handler sees
+ * it — `bullmq` and `memory` store `encodePayload(...)` and decode on consume,
+ * and `sync` does `decodePayload(encodePayload(...))` explicitly even though it
+ * never leaves the process. So the hashed string is exactly the string that
+ * determines what the handler receives, which makes "same key implies
+ * byte-identical delivery" a property of the system rather than an
+ * observation. Every case where devalue is lossy — own properties on a branded
+ * type, an invalid Date, a RegExp's lastIndex — is loss the suppressed job
+ * would have suffered anyway.
+ *
+ * This depends on the drivers continuing to decode the envelope. A driver that
+ * delivered the raw payload object instead would break the argument, not just
+ * the optimisation.
  */
 export const defaultDedupId = (jobName: string, payload: unknown): string =>
   `${jobName}:${createHash('sha256').update(encodePayload(payload).payload).digest('hex').slice(0, 32)}`
