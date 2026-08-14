@@ -157,6 +157,20 @@ sidekiq-unique-jobs' `while_executing` are the same missing primitive: a lock he
 duration of a job's execution, renewed against its own liveness, released on crash. That is the
 leader-election machinery declined above wearing a different hat, and building it is its own spec.
 
+**A cron job's ticks are not deduplicated at all, even when the job declares `unique`.** This
+corrects an earlier claim in this document that `cron` plus `unique` would give "no more than one
+*queued* at a time" — it will not, on either driver, and the reason is not a choice this spec made.
+BullMQ's own `JobSchedulerTemplateOptions` is
+`Omit<JobsOptions, 'jobId' | 'repeat' | 'delay' | 'deduplication' | 'debounce'>`
+(`bullmq/dist/esm/types/job-scheduler-template-options.d.ts`, verified in 5.63.0): a job scheduler's
+template **cannot carry deduplication options**, at the type level. `memory` matches that rather
+than being more forgiving, for the same reason it matches everything else — a `memory` driver that
+deduplicated ticks while `bullmq` did not would be the retry divergence all over again, with dev
+showing a guarantee production does not have.
+
+`unique` still applies in full to anything you `enqueue` yourself, including a manual run of a cron
+job from the dashboard. It is only the scheduler-produced ticks that are exempt.
+
 What exists instead is a recipe with an honest boundary. Give the job a dedicated queue with
 concurrency 1 — no new machinery, `worker.queues` already does this. **But BullMQ's concurrency is
 per `Worker` instance**, so two worker processes at concurrency 1 give you two concurrent runs.

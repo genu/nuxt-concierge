@@ -3611,8 +3611,13 @@ covering: the string and object `cron` forms; the **UTC default** and why it is 
 as an idempotency key; the three `unique` modes with what each guarantees; and the two honesty
 statements the spec requires, in these words:
 
-> **This deduplicates enqueues. It never serializes execution.** `cron` plus `unique` gives you
-> "no more than one *queued* at a time", which is not "no more than one *running* at a time".
+> **This deduplicates enqueues. It never serializes execution.**
+>
+> **A cron job's ticks are not deduplicated at all, even when the job declares `unique`.** BullMQ's
+> `JobSchedulerTemplateOptions` is `Omit<JobsOptions, … 'deduplication' | 'debounce'>`, so a
+> scheduler's template cannot carry deduplication options at the type level; `memory` matches that
+> rather than being more forgiving. `unique` applies in full to anything you `enqueue` yourself,
+> including a manual run from the dashboard — only scheduler-produced ticks are exempt.
 >
 > To reduce overlap, give the job a dedicated queue with concurrency 1. Note the limit:
 > BullMQ's concurrency is per worker *instance*, so two worker processes at concurrency 1 give
