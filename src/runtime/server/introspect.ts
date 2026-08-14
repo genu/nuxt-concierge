@@ -102,4 +102,19 @@ export const buildOverview = async (supervisor: Supervisor | undefined): Promise
   }
 }
 
+export interface JobDetailResponse extends Omit<JobDetail, 'envelope'> {
+  payload: PayloadResult
+}
+
+/**
+ * Replaces the raw envelope with a decoded result. The envelope is DROPPED,
+ * not carried alongside: keeping it would put a devalue string in front of
+ * the user and hand the client a second, undecoded copy it could be tempted
+ * to parse — which is how the decode path would end up duplicated in the SPA.
+ */
+export const toDetailResponse = (detail: JobDetail): JobDetailResponse => {
+  const { envelope, ...rest } = detail
+  return { ...rest, payload: decodeForDisplay(envelope) }
+}
+
 export type { JobDetail }

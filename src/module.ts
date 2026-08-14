@@ -94,6 +94,9 @@ export default defineNuxtModule<ModuleOptions>({
       // build, so the loop starts empty rather than pointing at nothing.
       const API_HANDLERS: Record<string, string> = {
         "/_concierge/api/overview": "./runtime/server/routes/api/overview",
+        "/_concierge/api/queues/:queue/jobs": "./runtime/server/routes/api/jobs-list",
+        "/_concierge/api/queues/:queue/jobs/:id": "./runtime/server/routes/api/jobs-detail",
+        "/_concierge/api/queues/:queue/jobs/:id/retry": "./runtime/server/routes/api/jobs-retry",
       };
 
       for (const [route, handlerFile] of Object.entries(API_HANDLERS)) {
