@@ -197,11 +197,22 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         const q = queueOf(queue)
         const types = BULL_STATES[state]
         const [jobs, total] = await Promise.all([
+          // BullMQ's getJobs applies the SAME start/end range to EVERY type
+          // key independently (getRanges-1.lua does one LRANGE/ZRANGE per
+          // key, then concatenates) rather than treating `types` as one
+          // globally-ordered, globally-paginated sequence. For `waiting`
+          // (['wait', 'prioritized']) that means offset=0, limit=10 can
+          // return up to 20 items — 10 from each key. Slicing the
+          // concatenation locally, below, is what actually enforces
+          // `page.limit`; the naive single getJobs call looks correct but
+          // silently returns 2x for any state backed by more than one type.
           q.getJobs(types, page.offset, page.offset + page.limit - 1),
           q.getJobCountByTypes(...types),
         ])
         return {
-          items: jobs.filter(Boolean).map(j => jobToSummary(j, queue, state)),
+          items: jobs.filter(Boolean)
+            .map(j => jobToSummary(j, queue, state))
+            .slice(0, page.limit),
           total,
         }
       },
@@ -212,10 +223,12 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
 
         const bullState = await job.getState()
         const state = bullStateToJobState(bullState)
-        // A job in `paused` or `waiting-children` has no canonical state. It
-        // is reported as `waiting` ONLY here, in the detail view, where `raw`
-        // carries the true state for display — never in `list`, whose queries
-        // are keyed by canonical state.
+        // A job in `paused` or `waiting-children` has no canonical state, and
+        // `getState()` can also return `unknown` (BullMQ's value when the job
+        // is not found in any known set, e.g. removed concurrently with this
+        // read). All three fall back to `waiting` ONLY here, in the detail
+        // view, where `raw.bullState` carries the true value for display —
+        // never in `list`, whose queries are keyed by canonical state.
         return {
           ...jobToSummary(job, queue, state ?? 'waiting'),
           envelope: job.data,
