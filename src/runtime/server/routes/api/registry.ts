@@ -49,7 +49,11 @@ export const buildRegistry = (
       hasSchema: Boolean(schema),
       // Read off the Standard Schema spec's own metadata. This is the most the
       // runtime knows about a schema — the payload type is compile-time only.
-      schemaVendor: schema?.['~standard'].vendor,
+      // The SECOND `?.` matters: an `input` validator present but missing
+      // `~standard` (a malformed or non-Standard-Schema validator) must not
+      // throw a TypeError inside this `.map()` and fail the whole endpoint —
+      // one job with no vendor beats a 500 for every job.
+      schemaVendor: schema?.['~standard']?.vendor,
       attempts: entry.attempts !== undefined
         ? { value: entry.attempts, from: 'job' as const }
         : { value: defaults.attempts, from: 'defaults' as const },

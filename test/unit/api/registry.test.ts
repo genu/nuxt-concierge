@@ -85,4 +85,30 @@ describe('buildRegistry', () => {
     expect(result.generatedTypes).toBeUndefined()
     expect(result.jobs).toHaveLength(2)
   })
+
+  it('reports one job with no vendor rather than 500ing the whole endpoint when a schema lacks ~standard', () => {
+    // `input` present but missing `~standard` entirely — a malformed or
+    // non-Standard-Schema validator. `schema?.['~standard'].vendor` (a
+    // single optional chain that stops at `schema`) throws a TypeError
+    // reading `.vendor` off `undefined` here, inside `.map()`, which used to
+    // fail every job in the response instead of just this one.
+    const supervisor = {
+      registry: new Map([
+        ['send-email', { queue: 'mail', input: {}, attempts: 5, backoff: { type: 'fixed', delay: 250 } }],
+        ['sweep', { queue: 'default' }],
+      ]),
+      config: {
+        worker: { queues: { mail: 2, default: 5 } },
+        defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+      },
+    } as unknown as Supervisor
+
+    const { jobs } = buildRegistry(supervisor, {}, undefined)
+
+    expect(jobs).toHaveLength(2)
+    const malformed = jobs.find(j => j.name === 'send-email')!
+    expect(malformed.hasSchema).toBe(true)
+    expect(malformed.schemaVendor).toBeUndefined()
+    expect(jobs.find(j => j.name === 'sweep')).toBeDefined()
+  })
 })

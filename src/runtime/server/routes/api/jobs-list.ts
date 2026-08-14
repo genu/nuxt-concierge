@@ -16,6 +16,37 @@ const STATES: JobState[] = ['waiting', 'active', 'completed', 'failed', 'delayed
  */
 const MAX_LIMIT = 100
 
+/**
+ * Rejects a non-finite query value (`Infinity`, `-Infinity`, `NaN`) by
+ * falling back to `fallback`, and truncates a finite non-integer (e.g.
+ * `25.7`) rather than passing it through.
+ *
+ * `Number('Infinity')` is `Infinity`, which is truthy and not `NaN`, so the
+ * previous `Number(query.limit ?? 25) || 25` fallback — which only catches
+ * `NaN` — let it straight through. `Number('1.5')` is likewise a valid
+ * finite number that survives `|| fallback` untouched. Both used to reach
+ * the bullmq driver's `getJobs(types, 0, offset + limit - 1)` call, and
+ * Redis rejects a non-integer or infinite range argument outright — turning
+ * a bad query string into a driver error and a 500, instead of this
+ * handler's own bounded 400/503.
+ */
+const toFiniteInt = (value: unknown, fallback: number): number => {
+  const n = Number(value)
+  return Number.isFinite(n) ? Math.trunc(n) : fallback
+}
+
+/**
+ * Exported so the coercion is unit-testable without an h3 event. Clamping
+ * (the `Math.max`/`Math.min` calls) happens AFTER `toFiniteInt`, so a
+ * negative or fractional value is truncated to an integer first and only
+ * then bounded into range — never the other way around, which would let a
+ * fraction slip through the clamp untruncated.
+ */
+export const parsePaging = (query: Record<string, unknown>): { offset: number, limit: number } => ({
+  offset: Math.max(0, toFiniteInt(query.offset, 0)),
+  limit: Math.min(MAX_LIMIT, Math.max(1, toFiniteInt(query.limit, 25))),
+})
+
 export default defineEventHandler(async (event) => {
   const supervisor = getSupervisor()
   // `supervisor` is checked on its own rather than via `supervisor?.driver`,
@@ -40,11 +71,6 @@ export default defineEventHandler(async (event) => {
     return { error: `unknown state "${state}"; expected one of: ${STATES.join(' | ')}` }
   }
 
-  // `|| 0` / `|| 25` fall back to the default when `Number(...)` produces
-  // NaN (a non-numeric query value, e.g. `?limit=banana`) — NaN survives
-  // Math.max/Math.min untouched, so without this a non-numeric limit would
-  // NOT be clamped to MAX_LIMIT at all.
-  //
   // `offset` deliberately has NO ceiling, unlike `limit`. That is only safe
   // because `bullmq.ts`'s `introspect.list()` always passes Redis range
   // START `0` (never `page.offset`) — see the "do not optimize the offset
@@ -53,8 +79,7 @@ export default defineEventHandler(async (event) => {
   // because the range start stays 0. If that invariant is ever "optimized"
   // away, `offset` needs a ceiling too — this comment exists so that change
   // does not land without one.
-  const offset = Math.max(0, Number(query.offset ?? 0) || 0)
-  const limit = Math.min(MAX_LIMIT, Math.max(1, Number(query.limit ?? 25) || 25))
+  const { offset, limit } = parsePaging(query)
 
   try {
     // Bounded for the same reason `buildOverview` is: `introspect.list()`
