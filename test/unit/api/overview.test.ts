@@ -72,8 +72,13 @@ describe('buildOverview', () => {
   })
 
   it('carries the history capability through so the UI can label evictions', async () => {
-    const result = await buildOverview(fakeSupervisor({ history: 'bounded' }))
-    expect(result.capabilities.history).toBe('bounded')
+    // 'durable', NOT 'bounded': the fake's own default (see `fakeSupervisor`
+    // above) is 'bounded', so asserting 'bounded' here could pass even if
+    // `buildOverview` hardcoded that value or dropped the override entirely.
+    // A non-default value is the only one that discriminates "forwarded from
+    // the driver" from "always bounded".
+    const result = await buildOverview(fakeSupervisor({ history: 'durable' }))
+    expect(result.capabilities?.history).toBe('durable')
   })
 
   it('reports an unhealthy driver without omitting the counts it last read', async () => {

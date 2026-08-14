@@ -361,19 +361,26 @@ export const createTemplateType = (jobs: ScannedJob[] = []) => {
 
 /**
  * Declares the `#concierge/*` aliases that `nitro:config` registers (see
- * `createTemplateType` below). Those aliases resolve at BUILD time but were
- * invisible to TypeScript, which is why `ui-handler.ts`'s import of
- * `#concierge/supervisor` was a TS2307 error.
+ * `createTemplateType` below). Those aliases resolve at BUILD time but are
+ * invisible to TypeScript on their own — a server route file importing one
+ * directly needs the app-graph declaration below, not just the nitro one.
+ * The bull-board `ui-handler.ts` route (deleted in Task 7, replaced by the
+ * dashboard's own routes under `routes/api/`) hit exactly this as a TS2307
+ * error on its `#concierge/supervisor` import, which is what proved the need
+ * for dual emission below.
  *
- * Emitted into BOTH the nitro graph AND the app graph. `ui-handler.ts` is
- * itself a registered server ROUTE (see `src/module.ts`'s `addServerHandler`
- * calls), so `nitro-routes.d.ts` references it (to type its response) and
- * drags its entire import graph — including `#concierge/supervisor` — into
- * the APP program too, the same way it does for `#concierge` (see Task 4).
- * A nitro-only declaration (`{ nitro: true }`) is therefore invisible to the
- * exact program that `pnpm typecheck` (`vue-tsc` via the app tsconfig)
- * checks, and the TS2307 persists there even though the nitro/server graph
- * resolves fine. Confirmed by direct experiment, not assumption.
+ * Emitted into BOTH the nitro graph AND the app graph. A registered server
+ * ROUTE (see `src/module.ts`'s `addServerHandler` calls) that imports one of
+ * these aliases has its whole import graph dragged into the APP program too
+ * — `nitro-routes.d.ts` references the route (to type its response), and
+ * that reference is what pulls it in, the same way it does for `#concierge`
+ * (see Task 4). A nitro-only declaration (`{ nitro: true }`) would therefore
+ * be invisible to the exact program that `pnpm typecheck` (`vue-tsc` via the
+ * app tsconfig) checks. Confirmed by direct experiment against `ui-handler.ts`
+ * at the time, not assumption. None of the dashboard's current routes import
+ * these aliases directly (they use relative imports instead), but that does
+ * not make the app-graph emission removable — it protects the next route
+ * that does, the same way it protected the one that no longer exists.
  *
  * Each module below declares its exports individually as
  * `const <name>: typeof import("<path>").<name>` rather than

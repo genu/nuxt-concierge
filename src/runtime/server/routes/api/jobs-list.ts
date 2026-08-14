@@ -44,6 +44,15 @@ export default defineEventHandler(async (event) => {
   // NaN (a non-numeric query value, e.g. `?limit=banana`) — NaN survives
   // Math.max/Math.min untouched, so without this a non-numeric limit would
   // NOT be clamped to MAX_LIMIT at all.
+  //
+  // `offset` deliberately has NO ceiling, unlike `limit`. That is only safe
+  // because `bullmq.ts`'s `introspect.list()` always passes Redis range
+  // START `0` (never `page.offset`) — see the "do not optimize the offset
+  // back into the Redis range" comment there. A hand-crafted `offset=1e9`
+  // still costs Redis roughly the queue's real size, not the offset value,
+  // because the range start stays 0. If that invariant is ever "optimized"
+  // away, `offset` needs a ceiling too — this comment exists so that change
+  // does not land without one.
   const offset = Math.max(0, Number(query.offset ?? 0) || 0)
   const limit = Math.min(MAX_LIMIT, Math.max(1, Number(query.limit ?? 25) || 25))
 

@@ -86,7 +86,13 @@ export const DRIVER_READ_TIMEOUT_MS = 1_500
  * job"). A sentinel return value can't make that distinction; a dedicated
  * thrown type can.
  */
-export class DriverReadTimeoutError extends Error {}
+export class DriverReadTimeoutError extends Error {
+  // Without this, `error.name` reads the base `Error`'s "Error" — subclassing
+  // `Error` does not set it for you. Irrelevant to every `instanceof
+  // DriverReadTimeoutError` check in this file (those don't consult `.name`
+  // at all), but wrong the moment anything logs the name instead.
+  name = 'DriverReadTimeoutError'
+}
 
 /**
  * Races a driver read against a fixed timeout so a fully unreachable backend
