@@ -161,6 +161,19 @@ against the same running dev server: `GET /_concierge/ui/` serves the SPA shell 
 reason `base: './'` was made load-bearing in the client build task), and `GET /_concierge/health`
 returns its JSON payload again (200), with nothing between them to shadow either one.
 
+**No longer an open question, and no longer resting on a one-off manual check:** the dev-server
+lifecycle scenario (`test/lifecycle/dashboard.test.ts`) turns the manual experiment above into
+automated, repeatable end-to-end coverage against a real `nuxi dev playground` process, run on
+every `pnpm test:lifecycle`. It asserts, over real HTTP, all three routes this fallback touches:
+`GET /_concierge/ui/` returns `200` with `<div id="app">` in the body (the SPA shell resolves);
+`GET /_concierge/api/overview` returns `200` with a JSON body (`{ driver, introspectable }`), not
+HTML — the specific, discriminating signal that the public-asset middleware has *not* swallowed a
+sibling API route; and `GET /_concierge/health` still returns `200` in dev, which is the exact
+regression the `/_concierge/ui` move fixed and which previously had only unit-level coverage
+(module registration, mocking `addServerHandler`, never booting a real Nitro server). The same
+scenario also drives a job to `failed` and back through a retry over this same running server,
+which is only possible at all because none of the three routes above shadow one another.
+
 ### The five states the UI must render deliberately
 
 An empty table is a lie in four of these five, so each gets a defined presentation. This is the

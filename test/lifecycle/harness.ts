@@ -37,11 +37,26 @@ const OUTPUT = 'playground/.output/server/index.mjs'
  */
 const spawned = new Set<ChildProcess>()
 
+/**
+ * The subset of `spawned` that was launched with `detached: true`
+ * (`spawnDevApp` only — see its doc comment). For these, a plain
+ * `proc.kill()` only reaches the immediate `pnpm` process, not the `nuxi`
+ * child it forks, so this belt-and-braces sweep must also signal the
+ * negated pid to reach the whole process group, exactly like their own
+ * `stop()` does.
+ */
+const detachedGroups = new Set<ChildProcess>()
+
 const killAll = () => {
   for (const proc of spawned) {
-    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+    try {
+      if (detachedGroups.has(proc) && proc.pid) process.kill(-proc.pid, 'SIGKILL')
+      else proc.kill('SIGKILL')
+    }
+    catch { /* already gone */ }
   }
   spawned.clear()
+  detachedGroups.clear()
 }
 
 process.on('exit', killAll)
@@ -113,6 +128,106 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
     port,
     logPath,
     stop: () => { try { proc.kill('SIGKILL') } catch { /* already gone */ } },
+    getStdout: () => stdout,
+    getStderr: () => stderr,
+  }
+}
+
+export interface SpawnDevOptions {
+  driver?: 'memory' | 'bullmq'
+  port?: number
+  logPath?: string
+}
+
+/**
+ * Spawns `nuxi dev playground` rather than the built output.
+ *
+ * Necessary, not preferred: every dashboard route is registered only under
+ * `nuxt.options.dev`, so the production artifact `spawnApp` runs contains no
+ * dashboard to test. NODE_ENV is left at development for the same reason —
+ * forcing production here would gate off the very routes under test.
+ *
+ * Readiness takes far longer than for the built output (Vite must compile the
+ * app on first request), so callers should pass a generous timeout to
+ * waitForReady.
+ *
+ * Spawned `detached: true` and stopped by killing the whole process group
+ * (`process.kill(-pid, 'SIGKILL')`), not just the immediate child. `nuxi dev`
+ * forks by default (`nuxi dev --help` shows `-f, --fork` defaulting to
+ * `true`), and `pnpm dev` itself is a wrapper around `nuxi`, so a plain
+ * `proc.kill('SIGKILL')` on just the top-level `pnpm` process was verified
+ * empirically (via `lsof -i` for this port range immediately after
+ * `cleanup()`/`killAllSpawned()` ran, with no detach/group-kill in place) to
+ * leave the forked Nuxt child bound to the port. Killing the negated pid
+ * signals every process in the group `detached: true` created, which is what
+ * actually frees the port — confirmed by the same `lsof` check coming back
+ * empty once this was added.
+ */
+export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle> => {
+  const port = opts.port ?? 3600 + Math.floor(Math.random() * 300)
+  const logPath = opts.logPath ?? join(tmpdir(), `concierge-dev-${randomUUID()}.log`)
+  if (!opts.logPath) writeFileSync(logPath, '')
+
+  const proc = spawn('pnpm', [
+    'dev',
+    '--port', String(port),
+    // Verified empirically: Nuxt's dev server (unlike the built output
+    // `spawnApp` runs) binds only the IPv6 loopback (`::1`) when no host is
+    // given — `curl http://127.0.0.1:<port>` got connection-refused while
+    // `curl http://localhost:<port>` (resolving to `::1`) succeeded against
+    // the same process. Every helper in this file (`waitForReady`, and every
+    // test's own `fetch`) targets `127.0.0.1` explicitly, so without this
+    // flag the dev server would never be reachable at all.
+    '--host', '127.0.0.1',
+  ], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      NITRO_PORT: String(port),
+      CONCIERGE_ROLE: 'both',
+      CONCIERGE_TEST_LOG: logPath,
+      NUXT_CONCIERGE_DRIVER: opts.driver ?? 'memory',
+      // Deliberately NOT production: see the doc comment above.
+      NODE_ENV: 'development',
+      VITEST: undefined,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // See the doc comment above: this is what makes `-proc.pid` a valid
+    // process-group id to signal in `stop()` below.
+    detached: true,
+  })
+
+  spawned.add(proc)
+  // Registered so `killAllSpawned`'s belt-and-braces sweep also group-kills
+  // this process if it ever runs before this handle's own `stop()` does
+  // (e.g. a crash or SIGINT to the test runner itself) — without this, that
+  // sweep would fall through to a plain `proc.kill()` on just the `pnpm`
+  // wrapper and leave the forked `nuxi` child (and the port) behind.
+  detachedGroups.add(proc)
+  proc.once('exit', () => { spawned.delete(proc); detachedGroups.delete(proc) })
+
+  let stdout = ''
+  let stderr = ''
+  proc.stdout?.on('data', (d: Buffer) => {
+    stdout += d.toString()
+    if (process.env.HARNESS_DEBUG) console.log(`[dev] ${d}`)
+  })
+  proc.stderr?.on('data', (d: Buffer) => {
+    stderr += d.toString()
+    if (process.env.HARNESS_DEBUG) console.error(`[dev] ${d}`)
+  })
+
+  return {
+    proc,
+    port,
+    logPath,
+    stop: () => {
+      try {
+        if (proc.pid) process.kill(-proc.pid, 'SIGKILL')
+        else proc.kill('SIGKILL')
+      }
+      catch { /* already gone */ }
+    },
     getStdout: () => stdout,
     getStderr: () => stderr,
   }
