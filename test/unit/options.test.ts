@@ -55,4 +55,46 @@ describe('resolveModuleOptions', () => {
     expect(resolved.defaults.attempts).toBe(7)
     expect(resolved.defaults.backoff).toEqual(moduleDefaults.defaults.backoff)
   })
+
+  describe('memory.historyLimit validation', () => {
+    // -1 is the case that actually hangs a process: memory.ts's eviction loop
+    // is `while (bucket.length > historyLimit) bucket.shift()`, and
+    // `shift()` on an empty array leaves `length` at 0, so `0 > -1` never
+    // becomes false.
+    it('throws a loud, actionable error for -1', () => {
+      expect(() => resolveModuleOptions({ memory: { historyLimit: -1 } }))
+        .toThrow(/concierge\.memory\.historyLimit must be a positive integer, received -1/)
+    })
+
+    // 0 does not hang, but it would silently discard every terminal record —
+    // still a config mistake that must be loud, not a silent no-history mode.
+    it('throws for 0', () => {
+      expect(() => resolveModuleOptions({ memory: { historyLimit: 0 } }))
+        .toThrow(/received 0/)
+    })
+
+    // A fraction retains an off-by-one count rather than hanging, so it needs
+    // its own rejection distinct from the negative/zero cases above.
+    it('throws for a non-integer like 1.5', () => {
+      expect(() => resolveModuleOptions({ memory: { historyLimit: 1.5 } }))
+        .toThrow(/received 1\.5/)
+    })
+
+    it('does not coerce — a bad value throws rather than silently clamping', () => {
+      // Guards against a "fix" that clamps to 1 instead of throwing: the spec
+      // requires a loud boot-time error, not a silent substitution.
+      expect(() => resolveModuleOptions({ memory: { historyLimit: -1 } })).toThrow()
+      expect(() => resolveModuleOptions({ memory: { historyLimit: 0 } })).toThrow()
+    })
+
+    it('accepts a valid positive integer', () => {
+      const resolved = resolveModuleOptions({ memory: { historyLimit: 250 } })
+      expect(resolved.memory.historyLimit).toBe(250)
+    })
+
+    it('accepts the default when the user supplies nothing', () => {
+      expect(() => resolveModuleOptions({})).not.toThrow()
+      expect(resolveModuleOptions({}).memory.historyLimit).toBe(moduleDefaults.memory.historyLimit)
+    })
+  })
 })

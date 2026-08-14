@@ -125,6 +125,20 @@ export interface DriverIntrospection {
     page: { offset: number, limit: number },
   ) => Promise<{ items: JobSummary[], total: number }>
   get: (queue: string, id: string) => Promise<JobDetail | undefined>
+  /**
+   * Re-queues a failed job. Throws if it is not currently `failed`.
+   *
+   * PRESERVES the recorded attempt count rather than resetting it. This
+   * mirrors BullMQ's own `job.retry()`, which has no option to reset
+   * `attemptsMade` (installed version 5.63.0: `retry(state?: FinishedStatus)`,
+   * no `resetAttemptsMade`) — an exhausted job moved back to `waiting` runs
+   * its handler exactly ONE more time and then dead-letters again, rather
+   * than receiving a full fresh allowance of `attempts` runs. `bullmq` is the
+   * reference for this behaviour and `memory` is required to match it exactly
+   * (see the `attempts: 3` case in `introspection-conformance.test.ts`); a
+   * driver that resets the count instead would let a UI-triggered retry run
+   * far more times on one driver than another for the identical job.
+   */
   retry: (queue: string, id: string) => Promise<void>
 }
 

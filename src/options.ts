@@ -136,8 +136,31 @@ export const moduleDefaults: ResolvedConciergeOptions = {
   },
 }
 
+/**
+ * Validated on its own, loud at boot, consistent with how `resolveRole`
+ * throws on a bad role (src/runtime/server/role.ts) — a config error must be
+ * a startup failure, not a mystery hang.
+ *
+ * `memory.ts`'s eviction loop is `while (bucket.length > historyLimit)
+ * bucket.shift()`. A negative value never terminates: `shift()` on an empty
+ * array leaves `length` at 0, and `0 > -1` stays true forever, hanging the
+ * worker on its first terminal job. `0` would silently discard every
+ * record, and a non-integer (e.g. `1.5`) would retain an off-by-one count —
+ * neither is coerced, both are rejected outright, so a config mistake is
+ * visible immediately rather than shipped.
+ */
+const validateHistoryLimit = (historyLimit: number): void => {
+  if (!Number.isInteger(historyLimit) || historyLimit < 1) {
+    throw new Error(
+      `[nuxt-concierge] concierge.memory.historyLimit must be a positive integer, received ${historyLimit}.`,
+    )
+  }
+}
+
 export const resolveModuleOptions = (options: ModuleOptions): ResolvedConciergeOptions => {
   const merged = defu(options, moduleDefaults) as ResolvedConciergeOptions
+
+  validateHistoryLimit(merged.memory.historyLimit)
 
   return {
     ...merged,

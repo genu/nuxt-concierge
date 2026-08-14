@@ -113,7 +113,15 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     bucket.push(record)
     // Oldest-first eviction. A `while` rather than a single `shift()` so a
     // lowered historyLimit converges instead of leaking one record per call.
-    while (bucket.length > historyLimit) bucket.shift()
+    // `bucket.length > 0` is a defensive second bound, not the primary fix:
+    // `resolveModuleOptions` validates `historyLimit` as a positive integer at
+    // boot, so this branch should be unreachable in practice. It exists
+    // because `shift()` on an empty array leaves `length` at 0, and a
+    // negative `historyLimit` sneaking in some other way (a direct
+    // `createMemoryDriver({ historyLimit: -1 })` call bypassing the
+    // module-option resolver, e.g. in a test) would otherwise spin forever:
+    // `0 > -1` never becomes false.
+    while (bucket.length > historyLimit && bucket.length > 0) bucket.shift()
   }
 
   const toDetail = (record: TerminalRecord): JobDetail => ({
@@ -279,9 +287,20 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
           name: record!.name,
           queue,
           envelope: record!.envelope,
-          // Reset so the retried job gets a full fresh allowance rather than
-          // landing immediately back in its exhausted terminal state.
-          attempt: 0,
+          // PRESERVED, not reset. BullMQ's `job.retry()` (installed version
+          // 5.63.0, `retry(state?: FinishedStatus)`, no options and no
+          // `resetAttemptsMade`) does not reset `attemptsMade` either — an
+          // exhausted job moved back to waiting runs the handler exactly ONE
+          // more time and then dead-letters again, rather than getting a full
+          // fresh allowance. Resetting to 0 here used to give `memory` up to
+          // `attempts` fresh runs on the very case where `bullmq` allows only
+          // one, which is invisible in the shared conformance table's
+          // `attempts: 1` case (both drivers coincidentally produce 2 total
+          // runs there) and only shows up at `attempts: 3`, the actual
+          // default. See the `attempts: 3` case in
+          // introspection-conformance.test.ts and `DriverIntrospection.retry`
+          // in drivers/types.ts.
+          attempt: record!.attemptsMade,
           runAt: Date.now(),
           attempts: record!.attempts,
           backoff: record!.backoff,

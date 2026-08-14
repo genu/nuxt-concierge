@@ -247,6 +247,11 @@ describe.each(INTROSPECTING_DRIVERS)('%s driver introspection contract', (name, 
 
     await driver.introspect!.retry(queue, id)
     await until(async () => runs >= 2)
+    // Poll for the driver's own recorded state rather than reading
+    // immediately after observing the run count: the handler throwing is not
+    // the same instant as the driver finishing its dead-letter write, and
+    // reading between those two would be racy.
+    await until(async () => (await driver.introspect!.counts(queue)).failed === 1)
 
     // Both halves. "It ran again" alone would pass on a retry that enqueues a
     // DUPLICATE while leaving the original in `failed` — so the failed count
@@ -256,6 +261,54 @@ describe.each(INTROSPECTING_DRIVERS)('%s driver introspection contract', (name, 
     expect(runs).toBe(2)
     const afterRetry = await driver.introspect!.list(queue, 'failed', { offset: 0, limit: 10 })
     expect(afterRetry.items.filter(j => j.id === id)).toHaveLength(1)
+  })
+
+  /**
+   * `attempts: 1` above cannot distinguish "resets the attempt count on
+   * retry" from "preserves it": incrementing from either 0 or 1 already
+   * exceeds a ceiling of 1 on the very next run, so both readings produce
+   * exactly 2 total runs. `attempts: 3` is the case that actually
+   * discriminates, and it is also `concierge.defaults.attempts` — the common
+   * path, not an edge case.
+   *
+   * `bullmq`'s `job.retry()` (installed version 5.63.0) has no option to
+   * reset `attemptsMade`, so a retried, already-exhausted bullmq job runs its
+   * handler exactly ONE more time before dead-lettering again — never a full
+   * fresh allowance of 3. `memory` is required to match that behaviour
+   * exactly (see `DriverIntrospection.retry` in `drivers/types.ts`), so this
+   * asserts the run count both drivers agree on, not merely one driver's
+   * reading of its own contract.
+   */
+  it('preserves the attempt count on retry rather than resetting it (attempts: 3)', async () => {
+    const queue = queueName('retry-attempts-3')
+    let runs = 0
+    driver.registerHandler(queue, 'bad', () => { runs++; throw new Error('boom') })
+    consumer = driver.consume(queue, { concurrency: 1 })
+
+    const { id } = await driver.enqueue(queue, { name: 'bad', payload: { a: 1 }, attempts: 3 })
+    await until(async () => (await driver.introspect!.counts(queue)).failed === 1)
+    expect(runs).toBe(3)
+
+    await driver.introspect!.retry(queue, id)
+    await until(async () => runs >= 4)
+    // As above: poll for the recorded dead-letter, not a fixed sleep after
+    // the run counter, so the assertions below never race the driver's own
+    // write.
+    await until(async () => (await driver.introspect!.counts(queue)).failed === 1)
+
+    // Exactly 4, not 6: a driver that resets the attempt count on retry would
+    // give this job a full fresh allowance of 3 more runs (total 6) instead
+    // of the single extra run BullMQ actually grants an exhausted job.
+    expect(runs).toBe(4)
+    const afterRetry = await driver.introspect!.list(queue, 'failed', { offset: 0, limit: 10 })
+    const record = afterRetry.items.find(j => j.id === id)
+    expect(record).toBeDefined()
+    expect(record!.attemptsMade).toBe(4)
+
+    // Confirms it dead-lettered rather than being scheduled for a further
+    // retry: waiting past any plausible backoff must not produce a 5th run.
+    await new Promise(r => setTimeout(r, 200))
+    expect(runs).toBe(4)
   })
 
   it('rejects a retry for a job that does not exist', async () => {
