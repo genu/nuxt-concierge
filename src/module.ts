@@ -76,9 +76,17 @@ export default defineNuxtModule<ModuleOptions>({
     if (nuxt.options.dev) {
       const clientDir = resolve("../dist/client");
 
+      // /_concierge/ui, NOT /_concierge: registering the SPA's static assets
+      // at the /_concierge baseURL itself was tried first and confirmed by
+      // direct experiment to shadow every sibling server route under that
+      // prefix — /_concierge/health returned 404 once this hook ran, and the
+      // same would have happened to every /_concierge/api/** route the next
+      // three tasks add. This is the fallback the spec named for exactly
+      // this outcome. /_concierge/health and /_concierge/api/** stay ordinary
+      // server routes with nothing shadowing them.
       nuxt.hook("nitro:config", (nitroConfig) => {
         nitroConfig.publicAssets ||= [];
-        nitroConfig.publicAssets.push({ dir: clientDir, baseURL: "/_concierge", maxAge: 0 });
+        nitroConfig.publicAssets.push({ dir: clientDir, baseURL: "/_concierge/ui", maxAge: 0 });
       });
 
       // Tasks 8-10 populate this as their handler files land. Registering a
@@ -94,7 +102,7 @@ export default defineNuxtModule<ModuleOptions>({
         name: "concierge",
         title: "Concierge",
         icon: "carbon:queued",
-        view: { type: "iframe", src: "/_concierge/" },
+        view: { type: "iframe", src: "/_concierge/ui/" },
       });
     }
 

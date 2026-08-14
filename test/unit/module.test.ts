@@ -154,11 +154,37 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
     expect(nitroConfig.publicAssets).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          baseURL: '/_concierge',
+          baseURL: '/_concierge/ui',
           dir: expect.stringContaining('dist/client'),
         }),
       ]),
     )
+  })
+
+  it('registers the client publicAssets under /_concierge/ui, NOT bare /_concierge, so it cannot shadow sibling server routes', async () => {
+    const nuxt = makeNuxt(true)
+    // The exported module is itself the callable `setup` (a NuxtModule),
+    // not an object with a `.setup` member — `nuxtConciergeModule.setup` is
+    // undefined at runtime, so it is called directly here. Wrapped in
+    // `runWithNuxtContext` because `scanJobs()` (called early in `setup()`)
+    // reads `useNuxt()`, which is otherwise unavailable outside a real Nuxt
+    // instance's module-loading context.
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    const nitroConfig: FakeNitroConfig = {}
+    await nuxt.callHook('nitro:config', nitroConfig as never)
+
+    // Confirmed by direct experiment against a real running Nitro dev server
+    // (not assumed): registering the client's static assets at baseURL
+    // `/_concierge` made `GET /_concierge/health` return 404 — the public
+    // asset middleware shadows every sibling route under that same prefix
+    // rather than falling through to it. `/_concierge/ui` is a strict
+    // sub-path of `/_concierge`, so `/_concierge/health` and the
+    // `/_concierge/api/**` routes Tasks 8-10 add are siblings of `ui/`, not
+    // descendants of it, and nothing shadows them.
+    const [asset] = nitroConfig.publicAssets ?? []
+    expect(asset?.baseURL).toBe('/_concierge/ui')
+    expect('/_concierge/health'.startsWith(`${asset?.baseURL}/`)).toBe(false)
   })
 
   it('registers NEITHER the tab NOR the publicAssets entry outside dev, while keeping health', async () => {

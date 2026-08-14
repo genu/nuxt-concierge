@@ -128,7 +128,7 @@ serving it.
 | ---- | ---------- | ------- |
 | `/_concierge/health` | always | Production readiness probe. **Unchanged by this spec.** |
 | `/_concierge/api/**` | `nuxt.options.dev` only | Introspection JSON API |
-| `/_concierge/**` (static) | `nuxt.options.dev` only | The prebuilt SPA, via `nitro.options.publicAssets` |
+| `/_concierge/ui/**` (static) | `nuxt.options.dev` only | The prebuilt SPA, via `nitro.options.publicAssets` |
 
 `ui-handler.ts` is deleted, taking with it the concurrent-first-request race that two phase 1
 tasks worked around ([phase1-decisions.md:65](2026-08-13-phase1-decisions.md)) and the three
@@ -144,12 +144,22 @@ in-process state visible at all.
 Static assets are served by pushing to `nitro.options.publicAssets` rather than by a bespoke
 handler, which yields correct MIME types and caching for free.
 
-**One unverified assumption, to be settled in the plan by experiment, not by reading:** whether
-Nitro's public-asset middleware falls through cleanly to the `/_concierge/api/**` handlers, and
-whether it resolves `index.html` for a bare `/_concierge/` request. If either misbehaves, the
-fallback is an explicit dev-only handler returning `index.html`, with assets moved under
-`/_concierge/ui/`. This is called out because a silent mis-resolution here presents as an empty
-panel, not an error.
+**Settled by experiment, in the implementation task (not assumed):** registering the SPA's static
+assets at the bare `/_concierge` baseURL was tried first, against a real running Nitro dev server,
+not just read about. The result was negative — Nitro's public-asset middleware does **not** fall
+through to sibling server routes registered under the same prefix; it shadows them. With
+`publicAssets` at `/_concierge`, `GET /_concierge/health` returned `404` even though
+`addServerHandler({ route: '/_concierge/health', ... })` was still registered — the exact
+"silent mis-resolution presents as an empty panel, not an error" failure mode this note warned
+about, except it hit the readiness probe instead of the panel. The same shadowing would have
+swallowed all five `/_concierge/api/**` routes the following three tasks add.
+
+The fallback named above was therefore taken: the SPA's static assets are registered at
+`/_concierge/ui` instead, one path segment deeper than the API and the health route. Verified
+against the same running dev server: `GET /_concierge/ui/` serves the SPA shell (200,
+`<div id="app">`, relative `./assets/...` tags resolving correctly one directory deeper — the
+reason `base: './'` was made load-bearing in the client build task), and `GET /_concierge/health`
+returns its JSON payload again (200), with nothing between them to shadow either one.
 
 ### The five states the UI must render deliberately
 
@@ -386,7 +396,7 @@ the shell once it builds and then fail CI on regression.
 addCustomTab({
   name: 'concierge',
   title: 'Concierge',
-  view: { type: 'iframe', src: '/_concierge/' },
+  view: { type: 'iframe', src: '/_concierge/ui/' },
 })
 ```
 
@@ -447,9 +457,15 @@ The consequence, recorded because it is the reason this scenario is not optional
 dashboard exists only in dev, **no production-build test can cover any of it**. Without a
 dev-server scenario, nothing in the suite ever loads the real SPA, the real `publicAssets`
 registration, or the real API through a real Nitro server — the module-registration unit test
-proves the routes are *registered*, never that they *respond*. This scenario is also where the
-`publicAssets` fallthrough assumption recorded under "Process shape and route table" gets settled
-by experiment.
+proves the routes are *registered*, never that they *respond*. This is also exactly why the
+`publicAssets`/`/_concierge` shadowing regression (see "Process shape and route table" above) was
+invisible to that unit test and only surfaced against a real dev server: the unit suite mocks
+`addServerHandler` and never boots Nitro, so a route that is registered but unreachable looks
+identical to one that works. This scenario's readiness poll against `/_concierge/health` is the
+regression test that would have caught it — had this scenario existed before the `publicAssets`
+baseURL was fixed, a `/_concierge` (rather than `/_concierge/ui`) registration would have hung the
+poll rather than failing it cleanly, since the health route would 404 forever instead of the
+harness getting a clear non-200 to report.
 
 This adds a third lifecycle file, which makes **issue #21** materially worse — the suite already
 rebuilds the playground once per file and grows linearly. A `globalSetup` is folded into this
