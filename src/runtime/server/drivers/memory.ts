@@ -2,7 +2,7 @@ import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { MemoryOptions } from '../../../options'
 import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
-import type { ConciergeDriver, Consumer, JobDetail, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, DedupOptions, EnqueueOptions, JobDetail, JobState, JobSummary } from './types'
 
 /** Exported so tests can spy on it instead of asserting on console output. */
 export const logger = consola.create({}).withTag('nuxt-concierge')
@@ -20,6 +20,7 @@ interface QueuedJob {
   attempts?: number
   backoff?: BackoffOptions
   createdAt: number
+  dedup?: DedupOptions
 }
 
 /**
@@ -73,6 +74,7 @@ interface TerminalRecord {
   finishedAt: number
   failedReason?: string
   stack?: string
+  dedupId?: string
 }
 
 /**
@@ -108,6 +110,62 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     return history.get(queue)!
   }
 
+  /**
+   * Dedup keys, scoped by queue exactly as BullMQ's are (its key is
+   * `<prefix>:<queue>:de:<id>`), so the same id on two queues does not
+   * collide.
+   *
+   * `expiresAt` is checked LAZILY on read rather than with a timer per key. A
+   * timer per key is a leak the driver would have to track and tear down, for
+   * no benefit in a driver whose entire lifetime is bounded by the process.
+   */
+  const dedupKeys = new Map<string, { jobId: string, expiresAt?: number }>()
+
+  const dedupKey = (queue: string, id: string) => `${queue}::${id}`
+
+  const liveDedup = (queue: string, id: string) => {
+    const entry = dedupKeys.get(dedupKey(queue, id))
+    if (!entry) return undefined
+    if (entry.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
+      dedupKeys.delete(dedupKey(queue, id))
+      return undefined
+    }
+    return entry
+  }
+
+  /**
+   * Mirrors `removeDeduplicationKeyIfNeededOnFinalization` in
+   * bullmq/dist/esm/scripts/moveToFinished-14.js: a key with NO expiry is
+   * deleted when the job finalizes; a key WITH one is left to expire. That
+   * asymmetry is the whole difference between lock mode and throttle mode, and
+   * `memory` has to reproduce it exactly or the two drivers disagree about
+   * which enqueues are suppressed.
+   *
+   * The `jobId` guard mirrors BullMQ's `currentJobId == jobId` check: a key
+   * already re-taken by a newer job must not be released by an older one
+   * finishing.
+   */
+  const releaseDedupOnFinalize = (queue: string, id: string | undefined, jobId: string) => {
+    if (!id) return
+    const k = dedupKey(queue, id)
+    const entry = dedupKeys.get(k)
+    if (!entry || entry.expiresAt !== undefined) return
+    if (entry.jobId === jobId) dedupKeys.delete(k)
+  }
+
+  const buildQueuedJob = (id: string, queue: string, job: EnqueueOptions): QueuedJob => ({
+    id,
+    name: job.name,
+    queue,
+    envelope: encodePayload(job.payload),
+    attempt: 0,
+    runAt: Date.now() + (job.delay ?? 0),
+    attempts: job.attempts,
+    backoff: job.backoff,
+    createdAt: Date.now(),
+    dedup: job.dedup,
+  })
+
   const remember = (record: TerminalRecord) => {
     const bucket = historyOf(record.queue)
     bucket.push(record)
@@ -136,6 +194,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     failedReason: record.failedReason,
     stack: record.stack,
     envelope: record.envelope,
+    deduplicationId: record.dedupId,
   })
 
   /**
@@ -243,6 +302,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             attempts: queued.attempts,
             createdAt: queued.createdAt,
             envelope: queued.envelope,
+            deduplicationId: queued.dedup?.id,
           }
         }
 
@@ -317,6 +377,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       pending.clear()
       history.clear()
       inFlight.clear()
+      dedupKeys.clear()
     },
 
     registerHandler: (queue, name, handler) => {
@@ -324,19 +385,51 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     },
 
     enqueue: async (queue, job) => {
+      if (job.dedup) {
+        const k = dedupKey(queue, job.dedup.id)
+        const existing = liveDedup(queue, job.dedup.id)
+
+        if (existing) {
+          if (job.dedup.replace) {
+            // DEBOUNCE. Supersede the pending job so the burst collapses onto
+            // the LAST payload, and re-arm the window when `extend` is set.
+            // Only a job still WAITING can be replaced — one already running
+            // or finished is not "pending" in any sense BullMQ's own
+            // removeDelayedJob would recognise.
+            const q = queueOf(queue)
+            const idx = q.findIndex(j => j.id === existing.jobId)
+            if (idx !== -1) {
+              q.splice(idx, 1)
+              const id = `mem-${++counter}`
+              q.push(buildQueuedJob(id, queue, job))
+              dedupKeys.set(k, {
+                jobId: id,
+                expiresAt: job.dedup.extend && job.dedup.ttl !== undefined
+                  ? Date.now() + job.dedup.ttl
+                  : existing.expiresAt,
+              })
+              return { id, deduplicated: false }
+            }
+          }
+          else if (job.dedup.extend && job.dedup.ttl !== undefined) {
+            // Sliding window without replacement: re-arm, keep the original.
+            dedupKeys.set(k, { jobId: existing.jobId, expiresAt: Date.now() + job.dedup.ttl })
+          }
+
+          return { id: existing.jobId, deduplicated: true }
+        }
+
+        const id = `mem-${++counter}`
+        queueOf(queue).push(buildQueuedJob(id, queue, job))
+        dedupKeys.set(k, {
+          jobId: id,
+          expiresAt: job.dedup.ttl !== undefined ? Date.now() + job.dedup.ttl : undefined,
+        })
+        return { id, deduplicated: false }
+      }
+
       const id = `mem-${++counter}`
-      queueOf(queue).push({
-        id,
-        name: job.name,
-        queue,
-        envelope: encodePayload(job.payload),
-        attempt: 0,
-        runAt: Date.now() + (job.delay ?? 0),
-        attempts: job.attempts,
-        backoff: job.backoff,
-        createdAt: Date.now(),
-      })
-      // No dedup support yet (Task 5); every enqueue is a new job.
+      queueOf(queue).push(buildQueuedJob(id, queue, job))
       return { id, deduplicated: false }
     },
 
@@ -364,6 +457,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             payload: decodePayload(job.envelope),
           })
 
+          releaseDedupOnFinalize(queue, job.dedup?.id, job.id)
           remember({
             id: job.id,
             name: job.name,
@@ -375,6 +469,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             backoff: job.backoff,
             createdAt: job.createdAt,
             finishedAt: Date.now(),
+            dedupId: job.dedup?.id,
           })
         }
         catch (error) {
@@ -412,6 +507,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               : `failed after ${job.attempt} attempt(s)`
             logger.error(`[${queue}] job "${job.name}" (${job.id}) ${reason}`, error)
 
+            releaseDedupOnFinalize(queue, job.dedup?.id, job.id)
             remember({
               id: job.id,
               name: job.name,
@@ -425,6 +521,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               finishedAt: Date.now(),
               failedReason: error instanceof Error ? error.message : String(error),
               stack: error instanceof Error ? error.stack : undefined,
+              dedupId: job.dedup?.id,
             })
           }
         }
