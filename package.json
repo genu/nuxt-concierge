@@ -40,6 +40,7 @@
     "lint": "eslint .",
     "typecheck": "nuxi typecheck playground",
     "typecheck:public": "tsc --noEmit -p test/types/tsconfig.json",
+    "typecheck:tests": "tsc --noEmit -p test/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest watch",
     "test:lifecycle": "vitest run --config vitest.lifecycle.config.ts",

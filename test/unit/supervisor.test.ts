@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createSupervisor, resetSupervisor, getDriver } from '../../src/runtime/server/supervisor'
+import type { SupervisorConfig } from '../../src/runtime/server/supervisor'
 
 const workHandler = async () => {}
 
-const baseConfig = {
+// Typed explicitly, not inferred: an untyped object literal widens
+// `backoff.type` to `string` (there is nothing here contextually typing it
+// as the `'fixed' | 'exponential'` union `SupervisorConfig` declares), which
+// then fails every `createSupervisor({ ...baseConfig, ... })` call below with
+// a backoff.type mismatch. Annotating `baseConfig` itself keeps that
+// narrowing on every spread/override use, rather than re-asserting it at
+// each call site.
+const baseConfig: SupervisorConfig = {
   role: 'both' as const,
   driver: 'memory' as const,
   connection: {},

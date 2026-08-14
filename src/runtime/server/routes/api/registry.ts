@@ -3,6 +3,7 @@ import { defineEventHandler } from 'h3'
 import { useRuntimeConfig } from '#imports'
 import { getSupervisor } from '../../supervisor'
 import type { Supervisor } from '../../supervisor'
+import type { ResolvedConciergeOptions } from '../../../../options'
 
 export interface RegistryJobView {
   name: string
@@ -74,9 +75,14 @@ export const buildRegistry = (
 }
 
 export default defineEventHandler(() => {
-  const config = useRuntimeConfig().concierge as {
-    jobFiles?: Record<string, string>
-    generatedTypesPath?: string
-  }
+  // `jobFiles`/`generatedTypesPath` are the only two fields this route
+  // reads, and both are `?` on `ResolvedConciergeOptions` itself (dev-only,
+  // absent in production) — so this cast duplicates no shape, unlike the
+  // inline type it replaces. Routed through `unknown`, not a direct `as`:
+  // `#imports` is a Nitro virtual module with no real shape outside a Nuxt
+  // build (see `test/imports.shim.d.ts`), so a direct cast's structural
+  // overlap check is an accident of whatever that shim happens to declare,
+  // not a real guarantee.
+  const config = useRuntimeConfig().concierge as unknown as ResolvedConciergeOptions
   return buildRegistry(getSupervisor(), config.jobFiles ?? {}, config.generatedTypesPath)
 })
