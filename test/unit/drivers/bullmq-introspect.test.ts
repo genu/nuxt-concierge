@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { bullStateToJobState, jobToSummary } from '../../../src/runtime/server/drivers/bullmq'
+import { Queue } from 'bullmq'
+import { bullStateToJobState, jobToSummary, createBullmqDriver } from '../../../src/runtime/server/drivers/bullmq'
 
 describe('bullStateToJobState', () => {
   it('maps the five canonical states directly', () => {
@@ -65,4 +66,79 @@ describe('jobToSummary', () => {
     // UI, which reads as a real timestamp rather than an absent one.
     expect(summary.finishedAt).toBeUndefined()
   })
+})
+
+/**
+ * Redis-gated: `getJobs` applies its start/end range independently to EACH
+ * BullMQ type key it is given (see the comment on `introspect.list` in
+ * bullmq.ts), so a naive `offset` passed straight through as the Redis range
+ * start silently drops every `prioritized` job once `wait` alone exceeds
+ * `offset`. Guarded on `REDIS_URL` exactly like the bullmq half of
+ * test/unit/retry-conformance.test.ts, and given a per-run unique queue name
+ * for the same reason: a name that repeats byte-for-byte across runs would
+ * let an interrupted run's leftover jobs poison the next run's counts.
+ */
+describe('introspect.list pagination (bullmq, requires REDIS_URL)', () => {
+  const REDIS_URL = process.env.REDIS_URL
+  const RUN_ID = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+  it.skipIf(!REDIS_URL)(
+    'pages through mixed wait+prioritized jobs with no loss and no duplication',
+    async () => {
+      const queue = `bullmq-introspect-pagination-${RUN_ID}`
+      const driver = createBullmqDriver({ connection: { url: REDIS_URL } })
+      // A raw Queue, not the driver, because this module's own `enqueue`
+      // never passes `priority` — seeding a `prioritized` job requires
+      // reaching past the driver straight into BullMQ.
+      const rawQueue = new Queue(queue, { connection: { url: REDIS_URL } })
+
+      await driver.init()
+
+      const WAIT_COUNT = 15
+      const PRIORITIZED_COUNT = 10
+      const LIMIT = 10
+      const expectedIds = new Set<string>()
+
+      try {
+        for (let i = 0; i < WAIT_COUNT; i++) {
+          const { id } = await driver.enqueue(queue, { name: 'plain', payload: { i } })
+          expectedIds.add(id)
+        }
+        for (let i = 0; i < PRIORITIZED_COUNT; i++) {
+          const added = await rawQueue.add('prioritized', { i }, { priority: i + 1 })
+          expectedIds.add(String(added.id))
+        }
+
+        const pages: string[][] = []
+        const first = await driver.introspect!.list(queue, 'waiting', { offset: 0, limit: LIMIT })
+        const total = first.total
+        pages.push(first.items.map(j => j.id))
+        for (let offset = LIMIT; offset < total; offset += LIMIT) {
+          const page = await driver.introspect!.list(queue, 'waiting', { offset, limit: LIMIT })
+          pages.push(page.items.map(j => j.id))
+        }
+
+        // total reports the full 25, matching what count() would compute too.
+        expect(total).toBe(WAIT_COUNT + PRIORITIZED_COUNT)
+
+        const allIds = pages.flat()
+        // The union of every page has exactly `total` entries: neither
+        // undersized (a job dropped, which is exactly what happened when the
+        // offset was applied to the Redis range) nor oversized (a job
+        // fetched twice).
+        expect(allIds.length).toBe(total)
+        // No id repeats across pages.
+        expect(new Set(allIds).size).toBe(allIds.length)
+        // Every seeded id — both `wait` and `prioritized` — appears in
+        // exactly one page. A single-page check cannot distinguish "fixed"
+        // from "prioritized jobs silently dropped starting page 2".
+        expect(allIds.slice().sort()).toEqual([...expectedIds].sort())
+      }
+      finally {
+        await rawQueue.obliterate({ force: true }).catch(() => {})
+        await rawQueue.close()
+        await driver.close(true)
+      }
+    },
+  )
 })

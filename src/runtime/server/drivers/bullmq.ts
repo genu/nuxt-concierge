@@ -200,19 +200,25 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
           // BullMQ's getJobs applies the SAME start/end range to EVERY type
           // key independently (getRanges-1.lua does one LRANGE/ZRANGE per
           // key, then concatenates) rather than treating `types` as one
-          // globally-ordered, globally-paginated sequence. For `waiting`
-          // (['wait', 'prioritized']) that means offset=0, limit=10 can
-          // return up to 20 items — 10 from each key. Slicing the
-          // concatenation locally, below, is what actually enforces
-          // `page.limit`; the naive single getJobs call looks correct but
-          // silently returns 2x for any state backed by more than one type.
-          q.getJobs(types, page.offset, page.offset + page.limit - 1),
+          // globally-ordered, globally-paginated sequence. `page.offset`
+          // therefore must NOT be passed as the Redis range start — that
+          // would mean "skip N of EACH type", not "skip N of the merged
+          // sequence", and a type with fewer entries than `page.offset` would
+          // have every one of its jobs silently skipped on every page. The
+          // range start is fixed at 0, and BOTH the offset and the limit are
+          // applied afterwards, locally, to the concatenated result — this
+          // over-fetches up to `offset + limit` rows per type on every page,
+          // which is fine and intended: `limit` is capped at 100 for a dev
+          // dashboard, so the over-fetch is small. Do not "optimize" the
+          // offset back into the Redis range; see the pagination test in
+          // bullmq-introspect.test.ts for why it must stay this way.
+          q.getJobs(types, 0, page.offset + page.limit - 1),
           q.getJobCountByTypes(...types),
         ])
         return {
           items: jobs.filter(Boolean)
             .map(j => jobToSummary(j, queue, state))
-            .slice(0, page.limit),
+            .slice(page.offset, page.offset + page.limit),
           total,
         }
       },
