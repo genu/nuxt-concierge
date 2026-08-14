@@ -1777,9 +1777,27 @@ its own — nothing on the returned job distinguishes "you created this" from "t
 because the id is the returned job's id in both cases. The reliable check is to read the current
 holder of the dedup key **before** adding and compare after.
 
-`Queue.getDeduplicationJobId` does **not** exist in 5.63.0 — verified; the only public dedup method
-is `removeDeduplicationKey(id)`. So the key is read directly, via BullMQ's own key base rather than
-a hardcoded string.
+Use **`Queue.getDeduplicationJobId(id)`**, BullMQ's own public accessor for exactly this key. It is
+declared on `QueueGetters` (`queue-getters.d.ts:38`), which `Queue` extends (`queue.d.ts:101`), and
+its body is literally ``client.get(`${this.keys.de}:${id}`)`` — the same GET this driver would
+otherwise hand-roll, without depending on the internal key layout.
+
+> **Corrected mid-execution.** An earlier version of this step asserted that
+> `getDeduplicationJobId` does *not* exist in 5.63.0 and had the driver build the key from
+> `queue.keys.de` instead. That claim was wrong: it came from grepping `classes/queue.d.ts` alone,
+> which does not show inherited members. Recorded here rather than quietly deleted, because
+> "verified against the installed source" is a claim this plan makes often, and this is the one
+> place it was made carelessly — the lesson is that a `.d.ts` grep proves nothing about an
+> inherited API.
+
+**This check races, and cannot be made not to.** The GET and the `add()` are two round trips with an
+`await` between them, so two callers enqueueing the same dedup id can both read an empty key; the
+loser's enqueue is suppressed by BullMQ but reports `deduplicated: false`. The error is
+one-directional — a fresh enqueue is never reported as deduplicated, because BullMQ's ids are
+monotonic per queue so a stale holder can never equal a new job's id — and the deduplication itself
+is atomic inside BullMQ's Lua, so no job is lost or double-run. Only the reporting can be stale.
+`memory` has no equivalent race because its check-and-write is synchronous with no `await` between
+them. Document it on `EnqueueResult.deduplicated`; do not try to engineer it away.
 
 Replace `enqueue` with:
 
@@ -2458,6 +2476,44 @@ for (const { name, create, skip } of DRIVERS) {
       const b = await driver.enqueue(queue, { name: 'j', payload: {} })
       expect(b.deduplicated).toBe(false)
       expect(b.id).not.toBe(a.id)
+    })
+
+    it('round-trips the dedup id onto the job detail', async () => {
+      // `deduplicationId` is a first-class JobDetail field precisely so this
+      // table can assert it. Nothing else covers it: bullmq's `introspect.get`
+      // needs a live Queue, and the unit tests for both drivers are pure
+      // mapping tests.
+      driver = create()
+      await driver.init()
+      const id = `detail-${Date.now()}`
+      const { id: jobId } = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+      expect((await driver.introspect!.get(queue, jobId))?.deduplicationId).toBe(id)
+    })
+
+    it('suppresses one of two CONCURRENT enqueues on the same key', async () => {
+      // The deduplication itself is atomic in both drivers, so exactly one job
+      // must exist afterwards — that half is a hard guarantee and is what this
+      // asserts.
+      //
+      // The `deduplicated` FLAG is deliberately not asserted here. On `bullmq`
+      // the check is a read followed by an add, two round trips, so both racers
+      // can read an empty key and the loser reports `deduplicated: false` for
+      // an enqueue that was in fact suppressed. That is a known, documented,
+      // one-directional reporting limitation (see EnqueueResult.deduplicated),
+      // not a difference in what actually got enqueued — and asserting the flag
+      // here would make this test fail on bullmq and pass on memory for a
+      // reason that has nothing to do with deduplication working.
+      driver = create()
+      await driver.init()
+      const id = `race-${Date.now()}`
+      const enqueue = () => driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+
+      const [a, b] = await Promise.all([enqueue(), enqueue()])
+
+      expect(a.id).toBe(b.id)
+      // The second half: two calls, one job. `a.id === b.id` alone would also
+      // hold if both calls had failed to enqueue anything at all.
+      expect((await driver.introspect!.counts(queue)).waiting).toBe(1)
     })
   })
 }
@@ -3619,9 +3675,17 @@ Four things already known to belong in it:
 
 Two known-unresolved items to carry as tracked issues rather than silently:
 
-- Task 6 Step 4 depends on `Queue.getDeduplicationJobId` existing in bullmq 5.63.0. If the grep in
-  that step shows it absent, the fallback reads the `de:` key directly, whose layout was read from
-  `moveToFinished-14.js` — record which path was taken and why.
+- **A `.d.ts` grep proves nothing about an inherited API.** This plan asserted that
+  `Queue.getDeduplicationJobId` does not exist in 5.63.0, having grepped `classes/queue.d.ts`
+  alone; it is declared on `QueueGetters`, which `Queue` extends. The driver shipped a hand-rolled
+  key read before review caught it. Every other "verified against the installed source" claim in
+  this plan was checked by execution rather than by grep — this was the one exception, and it was
+  the one that was wrong.
+- **`bullmq`'s `deduplicated` flag is best-effort under concurrency, by construction.** The read
+  and the add are two round trips, so racing callers can both see an empty key and the loser
+  reports `false` for a suppressed enqueue. One-directional, and the deduplication itself stays
+  atomic in Lua. Documented on `EnqueueResult.deduplicated`; the conformance table asserts the job
+  count rather than the flag for that case.
 - The `memory` driver's debounce `replace` only supersedes a job still in `pending`. A job already
   claimed by the run loop is not replaced, matching BullMQ's own `removeDelayedJob` returning false
   — confirm this against the conformance table and record it either way.
