@@ -76,6 +76,22 @@ watch([queue, state], load, { immediate: true })
         : 'This driver reports no queue contents. The Registry tab still works.'"
     />
     <template v-else>
+      <!--
+        Keyed directly off the server-computed `driverHealthy` flag — no
+        client-side derivation. This is the case `overview.introspectable`
+        alone cannot catch: for bullmq, `introspectable` stays `true`
+        throughout a Redis outage (the driver still HAS an introspect SPI, it
+        just can't currently answer), so without this a dead connection would
+        otherwise present as a silent empty list rather than an explained one.
+      -->
+      <UAlert
+        v-if="!overview.driverHealthy"
+        color="error"
+        icon="i-lucide-unplug"
+        title="The driver connection is down"
+        description="Job data below may be unavailable or out of date until the connection recovers."
+      />
+
       <div class="flex flex-wrap gap-2">
         <USelect v-model="queue" :items="overview.queues.map(q => q.name)" size="xs" />
         <USelect v-model="state" :items="[...STATES]" size="xs" />

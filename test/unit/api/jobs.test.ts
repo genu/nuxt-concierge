@@ -1,6 +1,28 @@
 import { describe, it, expect } from 'vitest'
-import { toDetailResponse, decodeForDisplay } from '../../../src/runtime/server/introspect'
+import {
+  toDetailResponse,
+  decodeForDisplay,
+  readJobsList,
+  readJobDetail,
+  retryJob,
+  DriverReadTimeoutError,
+} from '../../../src/runtime/server/introspect'
 import { encodePayload } from '../../../src/runtime/server/envelope'
+import type { DriverIntrospection } from '../../../src/runtime/server/drivers/types'
+
+/**
+ * Simulates ioredis's offline command queue against a dead connection
+ * (`maxRetriesPerRequest: null`): the promise never settles at all, rather
+ * than resolving or rejecting late. Only the function under test's own
+ * timeout is allowed to move past this — matching the `hangOnRead` fixture in
+ * `test/unit/api/overview.test.ts`.
+ */
+const hangingIntrospect: DriverIntrospection = {
+  counts: () => new Promise(() => {}),
+  list: () => new Promise(() => {}),
+  get: () => new Promise(() => {}),
+  retry: () => new Promise(() => {}),
+}
 
 describe('decodeForDisplay', () => {
   it('decodes a valid envelope', () => {
@@ -65,5 +87,52 @@ describe('toDetailResponse', () => {
     // what you need when the payload is the thing that is broken.
     expect(response.id).toBe('1')
     expect(response.payload.ok).toBe(false)
+  })
+})
+
+/**
+ * The Jobs tab has the identical unbounded-hang exposure `buildOverview` had,
+ * over the same three routes (list/detail/retry) — a dead-Redis bullmq
+ * connection queues `introspect.list()`/`get()`/`retry()` forever. Each of
+ * these three, unlike `buildOverview`, is a single-resource read with a real
+ * HTTP status to pick, so a timeout here THROWS (`DriverReadTimeoutError`)
+ * rather than degrading to a sentinel — the route handler turns that into a
+ * 503 naming the driver, instead of letting `JobsPanel` render an empty list
+ * indistinguishable from "there are genuinely no jobs" (its only other
+ * signal, `overview.introspectable`, stays `true` for bullmq throughout an
+ * outage).
+ *
+ * Every test below uses a real `Promise.race` against a promise that never
+ * settles, with a short INJECTED timeout (not the production 1.5s constant,
+ * and not fake timers) — so each test's own wall-clock cost is bounded by
+ * that number.
+ */
+describe('the jobs list/detail/retry routes time out instead of hanging', () => {
+  it('readJobsList rejects with DriverReadTimeoutError instead of hanging forever', async () => {
+    await expect(
+      readJobsList(hangingIntrospect, 'bullmq', 'default', 'failed', { offset: 0, limit: 25 }, 20),
+    ).rejects.toThrow(DriverReadTimeoutError)
+  })
+
+  it('readJobsList names the driver and the bound in the timeout message', async () => {
+    await expect(
+      readJobsList(hangingIntrospect, 'bullmq', 'default', 'failed', { offset: 0, limit: 25 }, 20),
+    ).rejects.toThrow(/bullmq driver did not respond within 20ms/)
+  })
+
+  it('readJobDetail rejects with DriverReadTimeoutError instead of hanging forever', async () => {
+    // Also the case that rules out a sentinel-return design: `get()`'s own
+    // legitimate "no such job" answer IS `undefined`, so a timeout that also
+    // resolved to `undefined` would be indistinguishable from a 404 — this
+    // must reject, not resolve.
+    await expect(
+      readJobDetail(hangingIntrospect, 'bullmq', 'default', 'mem-1', 20),
+    ).rejects.toThrow(DriverReadTimeoutError)
+  })
+
+  it('retryJob rejects with DriverReadTimeoutError instead of hanging forever', async () => {
+    await expect(
+      retryJob(hangingIntrospect, 'bullmq', 'default', 'mem-1', 20),
+    ).rejects.toThrow(DriverReadTimeoutError)
   })
 })

@@ -2,7 +2,17 @@ import type { Overview } from './types'
 
 const json = async <T>(url: string): Promise<T> => {
   const res = await fetch(url)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  if (!res.ok) {
+    // Every error route on the server (503 "driver unreachable"/"no
+    // introspection", 404 "unknown queue"/"no such job", 400 "unknown
+    // state") answers with a JSON `{ error }` body naming the actual cause —
+    // e.g. "the bullmq driver did not respond within 1500ms". Falling back to
+    // `res.statusText` alone would throw that away and leave every one of
+    // those callers with a generic "503 Service Unavailable", which is
+    // exactly the kind of unexplained failure this fix exists to avoid.
+    const body = await res.json().catch(() => undefined) as { error?: string } | undefined
+    throw new Error(body?.error ?? `${res.status} ${res.statusText}`)
+  }
   return res.json() as Promise<T>
 }
 
