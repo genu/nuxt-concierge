@@ -34,7 +34,7 @@ rather than left to be rediscovered.
 - Boot-time validation of a static cron payload against the job's own `input` schema
 - A `DriverScheduling` SPI, optional per driver, following spec 4's presence-is-capability pattern
 - Three deduplication modes — lock, throttle, debounce — mapped onto verified BullMQ primitives
-- `uniqueId(payload)` with a defined canonical form for the default key
+- `uniqueId(payload)`, with the default key derived from the serialized envelope
 - `enqueue` returning `{ id, deduplicated }`
 - Full `memory` driver parity for both features, held to one shared conformance table
 - A Schedules panel in the dev dashboard, with run-now
@@ -381,18 +381,34 @@ Two details that are easy to get wrong and that the conformance table must pin:
 reason spec 3 requires schema validators to be pure — though here the constraint is sharper, since
 an impure key does not fail loudly, it just stops deduplicating.
 
-The default key, when `unique` is set and `uniqueId` is not, is **the job name plus a stable hash
-of the payload** — matching Sidekiq's class+args and Oban's worker+args. For a cron job with no
-payload that reduces to the name alone.
+The default key, when `unique` is set and `uniqueId` is not, is **the job name plus a hash of the
+serialized envelope** — the exact devalue string the driver is about to store. Two enqueues whose
+payloads serialize identically deduplicate; two whose payloads do not, do not.
 
-**"Stable hash" needs a defined canonical form or this feature is broken in a way tests will not
-catch.** The payload is devalue-serializable, so it may contain `Date`, `Map`, `Set` and
-`undefined`, and object key order is insertion-ordered in JS. Two processes constructing the same
-logical payload with keys in a different order must produce the same key. The canonical form —
-recursive key sorting, a defined encoding per exotic type, a defined treatment of `undefined` — is
-specified in the implementation plan and unit-tested directly, not inferred from end-to-end
-behaviour. Getting this subtly wrong yields a dedup that works in every test and fails under
-production's mix of call sites.
+**This is deliberately not an order-insensitive canonical form, and that is a reversal.** An
+earlier version of this spec required one: recursive key sorting plus a defined encoding per exotic
+type, so that `{a: 1, b: 2}` and `{b: 2, a: 1}` would share a key. That requirement was attempted
+and abandoned after three implementation rounds, each of which fixed the cited examples and left
+the mechanism open. The reason is structural: a hand-written canonical form dispatches on
+`instanceof` and prototype identity, devalue dispatches on the `Object.prototype.toString` brand and
+on shape, and **any value falling in the gap between those two dispatchers gets devalue's
+insertion-ordered walk anyway**. Closing the gap means mirroring devalue's entire branch list and
+keeping it mirrored across versions. Concrete escapees found in review: a `URL` subclass carrying
+its own property, objects whose data is inherited one link up a null-prototype chain, and
+cross-realm `Map`/`Set`.
+
+Hashing the envelope has one dispatcher, so the gap cannot exist by construction.
+
+**The cost, stated plainly:** object key order affects the default key, so two call sites building
+the same logical payload with keys in a different order will not deduplicate against each other.
+Weighed against the alternative, this is the better failure. Order sensitivity means deduplication
+is *less effective* — the job runs twice, which every handler must already tolerate under
+at-least-once delivery. The bugs it replaces meant a job was *silently suppressed and never ran*.
+`uniqueId(payload)` remains the escape hatch for anyone who needs exact control, and it is what the
+README should point at for payloads assembled from more than one call site.
+
+For a cron job with no payload the key reduces to the name plus the hash of `undefined`, which is
+stable.
 
 ### The enqueue return
 
@@ -551,9 +567,17 @@ Dedup cases, one per mode plus the boundaries:
 - **Debounce**: a burst of N enqueues within the window yields exactly one run, and its payload is
   the *last* one enqueued, not the first — that is what `replace` means and it is the assertion
   that distinguishes debounce from throttle.
-- The default key: two enqueues of the same logical payload with **keys inserted in a different
-  order** deduplicate. This is a unit test on the canonical form as well, not only an end-to-end
-  case.
+- The default key: two enqueues of an **equal** payload deduplicate, and two of a **different**
+  payload do not. Both halves, because either alone is satisfied by a constant key or by no key at
+  all. Asserted at unit level against the derivation as well, not only end-to-end.
+- The default key's **order sensitivity is asserted, not merely tolerated**: `{a: 1, b: 2}` and
+  `{b: 2, a: 1}` produce different keys. That is a decision this spec took with its eyes open (see
+  The dedup key), and a test is what stops it from being silently "fixed" back into the canonical
+  form that failed three times.
+- Exotic payload values are distinguished **by value** through the same path — two different
+  `Date`s, two different `RegExp`s, two different `URL`s, and a `URL` subclass carrying its own
+  property with two different hrefs. The last is the specific regression that killed the canonical
+  form; it must not come back.
 - `sync` reports `deduplicated: false` and runs both.
 
 ### Unit

@@ -68,7 +68,7 @@ or silently behaviour-breaking.
 
 | File | Responsibility |
 | ---- | -------------- |
-| `src/runtime/server/dedup.ts` | Canonical payload encoding and dedup-key derivation. Pure. |
+| `src/runtime/server/dedup.ts` | Dedup-key derivation from the serialized envelope. Pure. |
 | `src/runtime/server/cron.ts` | Schedule resolution, reconciliation planning, boot payload validation. Pure. |
 | `src/runtime/server/routes/api/schedules-list.ts` | `GET /_concierge/api/schedules` |
 | `src/runtime/server/routes/api/schedules-run.ts` | `POST /_concierge/api/schedules/:name/run` |
@@ -442,23 +442,33 @@ git commit -m "feat(spec5): scheduling SPI, dedup types and cron config"
 ```
 
 ---
-
-## Task 2: Canonical payload encoding and the default dedup key
+## Task 2: The default dedup key
 
 **Files:**
 - Create: `src/runtime/server/dedup.ts`
 - Test: `test/unit/dedup.test.ts`
 
 **Interfaces:**
-- Consumes: `UniqueOptions` from `runtime/server/types.ts`, `DedupOptions` from `drivers/types.ts`.
-- Produces: `canonicalize(value: unknown): string`, `defaultDedupId(jobName: string, payload:
-  unknown): string`, `resolveDedup(args: { jobName, payload, unique?, uniqueId? }): DedupOptions |
-  undefined`.
+- Consumes: `UniqueOptions` from `runtime/server/types.ts`, `DedupOptions` from `drivers/types.ts`,
+  `encodePayload` from `runtime/server/envelope.ts`.
+- Produces: `defaultDedupId(jobName: string, payload: unknown): string`,
+  `resolveDedup(args: { jobName, payload, unique?, uniqueId? }): DedupOptions | undefined`.
 
-This is the task most likely to ship a subtle defect, so it is isolated and tested directly rather
-than inferred from end-to-end behaviour. Two processes constructing the same logical payload with
-object keys inserted in a different order **must** produce the same key; JS object key order is
-insertion-ordered, and `devalue` preserves it.
+**This task replaces an abandoned design. Read this before writing code.**
+
+An earlier version of this task built an order-insensitive canonical form — recursive key sorting
+plus a hand-written encoding per exotic type — so that `{a: 1, b: 2}` and `{b: 2, a: 1}` would share
+a dedup key. It was implemented and reviewed three times, and each round closed the cited examples
+while leaving the mechanism open. The failure is structural: a hand-written canonical form
+dispatches on `instanceof` and prototype identity, `devalue` dispatches on the
+`Object.prototype.toString` brand and on shape, and **any value in the gap between those two
+dispatchers gets devalue's insertion-ordered walk regardless**. Escapees found in review included a
+`URL` subclass carrying its own property (two different hrefs, one key — a silently suppressed job),
+objects whose data is inherited one link up a null-prototype chain, and cross-realm `Map`/`Set`.
+
+The replacement hashes the **serialized envelope** — the exact devalue string the driver is about to
+store. One dispatcher, so the gap cannot exist. Do not reintroduce a canonical form, a key sort, or
+a per-type encoding; the spec now records order sensitivity as an accepted, tested property.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -466,64 +476,83 @@ Create `test/unit/dedup.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { canonicalize, defaultDedupId, resolveDedup } from '../../src/runtime/server/dedup'
-
-describe('canonicalize', () => {
-  it('is insensitive to object key insertion order', () => {
-    // THE case this module exists for. Object key order is insertion-ordered
-    // in JS and devalue preserves it, so two call sites building the same
-    // logical payload in different orders would otherwise dedup inconsistently
-    // — a bug that passes every end-to-end test written by one author.
-    expect(canonicalize({ a: 1, b: 2 })).toBe(canonicalize({ b: 2, a: 1 }))
-  })
-
-  it('still distinguishes genuinely different payloads', () => {
-    // Paired with the case above deliberately: an implementation returning a
-    // constant satisfies "insensitive to key order" perfectly.
-    expect(canonicalize({ a: 1, b: 2 })).not.toBe(canonicalize({ a: 1, b: 3 }))
-  })
-
-  it('distinguishes a value from its string form', () => {
-    expect(canonicalize({ a: 1 })).not.toBe(canonicalize({ a: '1' }))
-  })
-
-  it('encodes Date by instant', () => {
-    const d = new Date('2026-08-14T00:00:00.000Z')
-    expect(canonicalize(d)).toBe(canonicalize(new Date(d.getTime())))
-    expect(canonicalize(d)).not.toBe(canonicalize(new Date(d.getTime() + 1)))
-  })
-
-  it('encodes Map by sorted entries, not insertion order', () => {
-    const a = new Map([['x', 1], ['y', 2]])
-    const b = new Map([['y', 2], ['x', 1]])
-    expect(canonicalize(a)).toBe(canonicalize(b))
-  })
-
-  it('encodes Set by sorted members, not insertion order', () => {
-    expect(canonicalize(new Set([1, 2]))).toBe(canonicalize(new Set([2, 1])))
-  })
-
-  it('preserves array order, which is semantic', () => {
-    // Arrays are NOT sorted: [1,2] and [2,1] are different payloads.
-    expect(canonicalize([1, 2])).not.toBe(canonicalize([2, 1]))
-  })
-
-  it('distinguishes an absent key from an explicit undefined', () => {
-    expect(canonicalize({ a: 1 })).not.toBe(canonicalize({ a: 1, b: undefined }))
-  })
-
-  it('distinguishes null from undefined', () => {
-    expect(canonicalize({ a: null })).not.toBe(canonicalize({ a: undefined }))
-  })
-})
+import { defaultDedupId, resolveDedup } from '../../src/runtime/server/dedup'
 
 describe('defaultDedupId', () => {
+  it('is stable for an equal payload', () => {
+    expect(defaultDedupId('mail', { a: 1, b: 2 })).toBe(defaultDedupId('mail', { a: 1, b: 2 }))
+  })
+
+  it('differs for a different payload', () => {
+    // Paired with the case above deliberately: a function returning a constant
+    // satisfies "stable for an equal payload" perfectly.
+    expect(defaultDedupId('mail', { a: 1 })).not.toBe(defaultDedupId('mail', { a: 2 }))
+  })
+
   it('includes the job name, so two jobs with equal payloads do not collide', () => {
     expect(defaultDedupId('mail', { id: 1 })).not.toBe(defaultDedupId('report', { id: 1 }))
   })
 
-  it('is stable for the same job and logical payload', () => {
-    expect(defaultDedupId('mail', { a: 1, b: 2 })).toBe(defaultDedupId('mail', { b: 2, a: 1 }))
+  it('IS sensitive to object key order — an accepted, deliberate property', () => {
+    // Not a bug and not an oversight. The order-insensitive canonical form this
+    // replaced was attempted three times and abandoned; see the spec's "The
+    // dedup key" section. This test exists so the property cannot be silently
+    // "fixed" back into the design that failed. A caller who needs
+    // order-insensitivity supplies `uniqueId`.
+    expect(defaultDedupId('mail', { a: 1, b: 2 })).not.toBe(defaultDedupId('mail', { b: 2, a: 1 }))
+  })
+
+  it('distinguishes a value from its string form', () => {
+    expect(defaultDedupId('j', { a: 1 })).not.toBe(defaultDedupId('j', { a: '1' }))
+  })
+
+  it('distinguishes null from undefined', () => {
+    expect(defaultDedupId('j', { a: null })).not.toBe(defaultDedupId('j', { a: undefined }))
+  })
+
+  it('distinguishes two different Dates', () => {
+    const d = new Date('2026-08-14T00:00:00.000Z')
+    expect(defaultDedupId('j', d)).toBe(defaultDedupId('j', new Date(d.getTime())))
+    expect(defaultDedupId('j', d)).not.toBe(defaultDedupId('j', new Date(d.getTime() + 1)))
+  })
+
+  it('distinguishes two different RegExps', () => {
+    expect(defaultDedupId('j', /abc/)).not.toBe(defaultDedupId('j', /xyz/))
+    expect(defaultDedupId('j', /abc/g)).not.toBe(defaultDedupId('j', /abc/i))
+  })
+
+  it('distinguishes two different URLs', () => {
+    expect(defaultDedupId('j', new URL('http://a.example.com')))
+      .not.toBe(defaultDedupId('j', new URL('http://b.example.com')))
+  })
+
+  it('distinguishes a URL subclass carrying its own property, by href', () => {
+    // THE regression that killed the canonical form. Under the sorted-entries
+    // design both of these collapsed to one key — two different webhooks, one
+    // silently suppressed. devalue serializes a URL subclass by href, so the
+    // envelope distinguishes them for free.
+    class Webhook extends URL {
+      readonly retries: number
+      constructor(url: string, retries: number) {
+        super(url)
+        this.retries = retries
+      }
+    }
+    expect(defaultDedupId('j', new Webhook('http://a.example.com', 3)))
+      .not.toBe(defaultDedupId('j', new Webhook('http://b.example.com', 3)))
+  })
+
+  it('distinguishes Map contents and Set members', () => {
+    expect(defaultDedupId('j', new Map([['x', 1]]))).not.toBe(defaultDedupId('j', new Map([['x', 2]])))
+    expect(defaultDedupId('j', new Set([1]))).not.toBe(defaultDedupId('j', new Set([2])))
+  })
+
+  it('preserves array order, which is semantic', () => {
+    expect(defaultDedupId('j', [1, 2])).not.toBe(defaultDedupId('j', [2, 1]))
+  })
+
+  it('is stable for a cron job with no payload', () => {
+    expect(defaultDedupId('digest', undefined)).toBe(defaultDedupId('digest', undefined))
   })
 })
 
@@ -533,32 +562,41 @@ describe('resolveDedup', () => {
   })
 
   it('lock mode carries an id and no ttl', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: { a: 1 }, unique: {} })
-    expect(d).toEqual({ id: expect.any(String) })
+    expect(resolveDedup({ jobName: 'mail', payload: { a: 1 }, unique: {} }))
+      .toEqual({ id: expect.any(String) })
   })
 
   it('throttle mode carries the ttl and neither extend nor replace', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 60_000 } })
-    expect(d).toEqual({ id: expect.any(String), ttl: 60_000 })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 60_000 } }))
+      .toEqual({ id: expect.any(String), ttl: 60_000 })
   })
 
   it('debounce mode sets extend and replace alongside the ttl', () => {
-    const d = resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 5_000, debounce: true } })
-    expect(d).toEqual({ id: expect.any(String), ttl: 5_000, extend: true, replace: true })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 5_000, debounce: true } }))
+      .toEqual({ id: expect.any(String), ttl: 5_000, extend: true, replace: true })
+  })
+
+  it('ignores debounce without a ttl', () => {
+    // `extend`/`replace` with no expiry is BullMQ's replace-with-no-expiry
+    // branch — a lock that keeps moving, not a debounce window. `defineJob`
+    // rejects this combination at definition time (Task 4), so this asserts the
+    // resolver degrades safely rather than emitting a mode nobody asked for.
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { debounce: true } }))
+      .toEqual({ id: expect.any(String) })
   })
 
   it('prefers a user-supplied uniqueId over the default', () => {
-    const d = resolveDedup({
+    expect(resolveDedup({
       jobName: 'mail',
       payload: { id: 7 },
       unique: {},
       uniqueId: (p: { id: number }) => `invoice:${p.id}`,
-    })
-    expect(d?.id).toBe('mail:invoice:7')
+    })?.id).toBe('mail:invoice:7')
   })
 
   it('namespaces a user-supplied uniqueId by job name', () => {
-    // Two jobs whose uniqueId functions both return "1" must not collide.
+    // Two jobs whose uniqueId functions both return "1" must not collide — a
+    // cross-job interaction nobody could predict from reading either job.
     const a = resolveDedup({ jobName: 'mail', payload: {}, unique: {}, uniqueId: () => '1' })
     const b = resolveDedup({ jobName: 'report', payload: {}, unique: {}, uniqueId: () => '1' })
     expect(a?.id).not.toBe(b?.id)
@@ -569,6 +607,7 @@ describe('resolveDedup', () => {
 - [ ] **Step 2: Run it and confirm it fails**
 
 Run: `pnpm vitest run test/unit/dedup.test.ts`
+
 Expected: FAIL with `Cannot find module '.../dedup'`.
 
 - [ ] **Step 3: Implement**
@@ -577,74 +616,46 @@ Create `src/runtime/server/dedup.ts`:
 
 ```ts
 import { createHash } from 'node:crypto'
+import { encodePayload } from './envelope'
 import type { UniqueOptions } from './types'
 import type { DedupOptions } from './drivers/types'
 
 /**
- * A deterministic string form of a payload, insensitive to object key
- * insertion order and to Map/Set iteration order.
+ * Job name plus a hash of the SERIALIZED ENVELOPE — the exact devalue string
+ * the driver is about to store.
  *
- * This exists because the DEFAULT dedup key is derived from the payload, and
- * JS object key order is insertion-ordered — `devalue.stringify({a,b})` and
- * `devalue.stringify({b,a})` produce different strings for the same logical
- * value. Two call sites building the same payload in different orders would
- * therefore fail to deduplicate, in a way that passes every end-to-end test
- * written by one author and fails under production's mix of call sites.
+ * Deliberately not an order-insensitive canonical form. One was specified and
+ * attempted across three implementation rounds, and each round fixed the cited
+ * examples while leaving the mechanism open. The failure is structural: a
+ * hand-written canonical form dispatches on `instanceof` and prototype
+ * identity, devalue dispatches on the `Object.prototype.toString` brand and on
+ * shape, and any value in the gap between those two dispatchers gets devalue's
+ * insertion-ordered walk regardless. Escapees found in review: a `URL` subclass
+ * carrying its own property (two hrefs, one key — a silently suppressed job),
+ * objects whose data is inherited one link up a null-prototype chain, and
+ * cross-realm `Map`/`Set`.
  *
- * Deliberately NOT devalue: devalue's job is round-tripping fidelity, and its
- * output is order-preserving by design. This is a one-way canonical encoding
- * with a different goal. It never needs to be parsed back.
+ * Hashing the envelope has ONE dispatcher, so the gap cannot exist by
+ * construction, and every exotic type devalue supports is distinguished by
+ * value for free.
  *
- * Every branch emits a TYPE TAG, so `{a:1}` and `{a:'1'}` cannot collide and
- * an absent key cannot equal an explicit `undefined`.
- */
-export const canonicalize = (value: unknown): string => {
-  if (value === null) return 'z'
-  if (value === undefined) return 'u'
-
-  switch (typeof value) {
-    case 'string': return `s:${value.length}:${value}`
-    case 'number': return `n:${Object.is(value, -0) ? '-0' : String(value)}`
-    case 'boolean': return `b:${value ? 1 : 0}`
-    case 'bigint': return `i:${value}`
-    // A function or symbol in a payload cannot survive serialisation anyway;
-    // encoding it as a fixed tag keeps this total rather than throwing on a
-    // value the enqueue path is about to reject for other reasons.
-    case 'function':
-    case 'symbol': return 'x'
-  }
-
-  if (value instanceof Date) return `d:${value.getTime()}`
-  if (value instanceof Map) {
-    // Sorted by the CANONICAL FORM of each entry, not by the raw key: a Map
-    // may be keyed by objects, which have no meaningful `<` ordering.
-    return `m:[${[...value.entries()].map(([k, v]) => `${canonicalize(k)}=${canonicalize(v)}`).sort().join(',')}]`
-  }
-  if (value instanceof Set) {
-    return `t:[${[...value].map(canonicalize).sort().join(',')}]`
-  }
-  if (Array.isArray(value)) {
-    // NOT sorted. Array order is semantic — [1,2] and [2,1] are different
-    // payloads and must produce different keys.
-    return `a:[${value.map(canonicalize).join(',')}]`
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .map(([k, v]) => `${canonicalize(k)}=${canonicalize(v)}`)
-    .sort()
-  return `o:{${entries.join(',')}}`
-}
-
-/**
- * Job name plus a hash of the canonical payload — matching Sidekiq's
- * class+args and Oban's worker+args. For a cron job with no payload this
- * reduces to the name plus the hash of `undefined`, which is stable.
+ * The accepted cost: object key order affects the key, so two call sites
+ * building the same logical payload in different orders will not deduplicate
+ * against each other. That is the better failure — order sensitivity means
+ * deduplication is less effective and the job runs twice, which every handler
+ * must already tolerate under at-least-once delivery, whereas the bugs it
+ * replaces meant a job was silently suppressed and never ran. `uniqueId` is the
+ * escape hatch for payloads assembled from more than one call site.
  *
- * Hashed rather than embedded whole because the id becomes a Redis key
- * suffix, and an unbounded payload would make an unbounded key.
+ * Hashed rather than embedded whole because the id becomes a Redis key suffix,
+ * and an unbounded payload would make an unbounded key.
+ *
+ * A payload devalue cannot serialize throws HERE rather than one line later in
+ * `driver.enqueue`, which already calls `encodePayload` on the same value — the
+ * same error, the same call site, marginally earlier.
  */
 export const defaultDedupId = (jobName: string, payload: unknown): string =>
-  `${jobName}:${createHash('sha256').update(canonicalize(payload)).digest('hex').slice(0, 32)}`
+  `${jobName}:${createHash('sha256').update(encodePayload(payload).payload).digest('hex').slice(0, 32)}`
 
 export interface ResolveDedupArgs {
   jobName: string
@@ -659,9 +670,9 @@ export interface ResolveDedupArgs {
  * when the job declares none.
  *
  * A user-supplied `uniqueId` is always NAMESPACED by job name. Without it, two
- * jobs whose functions both return `"1"` would share one dedup key and
- * suppress each other — a cross-job interaction nobody would predict from
- * reading either job.
+ * jobs whose functions both return `"1"` would share one dedup key and suppress
+ * each other — a cross-job interaction nobody would predict from reading either
+ * job.
  */
 export const resolveDedup = (
   { jobName, payload, unique, uniqueId }: ResolveDedupArgs,
@@ -673,8 +684,8 @@ export const resolveDedup = (
   // `debounce` requires a ttl to mean anything: `extend`/`replace` without one
   // is BullMQ's replace-with-no-expiry branch, which is a lock that keeps
   // moving rather than a debounce. Resolution drops it rather than emitting a
-  // combination whose behaviour nobody asked for; Task 4 rejects the config at
-  // boot so this branch is unreachable from a real job.
+  // combination nobody asked for; Task 4 rejects it at definition time, so this
+  // branch is unreachable from a real job.
   if (unique.ttl === undefined) return { id }
   if (unique.debounce) return { id, ttl: unique.ttl, extend: true, replace: true }
   return { id, ttl: unique.ttl }
@@ -684,13 +695,16 @@ export const resolveDedup = (
 - [ ] **Step 4: Run the tests**
 
 Run: `pnpm vitest run test/unit/dedup.test.ts`
-Expected: PASS, all 17 cases.
+Expected: PASS, all cases.
+
+Run: `pnpm lint && pnpm typecheck:tests`
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/runtime/server/dedup.ts test/unit/dedup.test.ts
-git commit -m "feat(spec5): canonical payload encoding and dedup key derivation"
+git commit -m "refactor(spec5): derive the default dedup key from the serialized envelope"
 ```
 
 ---
