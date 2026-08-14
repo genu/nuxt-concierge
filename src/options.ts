@@ -107,6 +107,10 @@ export interface ResolvedConciergeOptions {
   bullmq: BullmqOptions
   memory: MemoryOptions
   defaults: JobDefaults
+  /** Dev-only, written by the module. Absolute paths; never present in production. */
+  jobFiles?: Record<string, string>
+  /** Dev-only, written by the module. Absolute path; never present in production. */
+  generatedTypesPath?: string
 }
 
 export const moduleDefaults: ResolvedConciergeOptions = {

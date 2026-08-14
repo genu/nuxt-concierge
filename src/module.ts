@@ -97,11 +97,23 @@ export default defineNuxtModule<ModuleOptions>({
         "/_concierge/api/queues/:queue/jobs": "./runtime/server/routes/api/jobs-list",
         "/_concierge/api/queues/:queue/jobs/:id": "./runtime/server/routes/api/jobs-detail",
         "/_concierge/api/queues/:queue/jobs/:id/retry": "./runtime/server/routes/api/jobs-retry",
+        "/_concierge/api/registry": "./runtime/server/routes/api/registry",
       };
 
       for (const [route, handlerFile] of Object.entries(API_HANDLERS)) {
         addServerHandler({ route, handler: resolve(handlerFile) });
       }
+
+      // Dev-only, and it must STAY dev-only: these are absolute build-machine
+      // paths, and baking them into a production runtimeConfig would ship one
+      // developer's directory layout to every deployment.
+      nuxt.options.runtimeConfig.concierge = defu(
+        {
+          jobFiles: Object.fromEntries(jobs.map((job) => [job.name, job.file])),
+          generatedTypesPath: `${nuxt.options.buildDir}/types/concierge-jobs.d.ts`,
+        },
+        nuxt.options.runtimeConfig.concierge
+      );
 
       addCustomTab({
         name: "concierge",

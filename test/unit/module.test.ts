@@ -215,6 +215,31 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
     expect(handlers.some(h => h.route?.startsWith('/_concierge/api'))).toBe(false)
   })
 
+  it('does not write jobFiles or generatedTypesPath into runtimeConfig outside dev', async () => {
+    const nuxt = makeNuxt(false)
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    // These are ABSOLUTE build-machine paths. Baking them into a production
+    // runtimeConfig would ship one developer's directory layout to every
+    // deployment — this is the whole reason the registry endpoint's plumbing
+    // lives inside the `nuxt.options.dev` block rather than beside the rest
+    // of the resolved options.
+    const concierge = (nuxt.options.runtimeConfig as { concierge?: Record<string, unknown> }).concierge
+    expect(concierge?.jobFiles).toBeUndefined()
+    expect(concierge?.generatedTypesPath).toBeUndefined()
+  })
+
+  it('writes jobFiles and generatedTypesPath into runtimeConfig in dev', async () => {
+    const nuxt = makeNuxt(true)
+    await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
+
+    const concierge = (nuxt.options.runtimeConfig as { concierge?: Record<string, unknown> }).concierge
+    // No jobs under this fake rootDir's server/jobs, so an empty map — but
+    // present (an object), which is the point: it is written at all in dev.
+    expect(concierge?.jobFiles).toEqual({})
+    expect(concierge?.generatedTypesPath).toBe(`${nuxt.options.buildDir}/types/concierge-jobs.d.ts`)
+  })
+
   it('still registers the health route in dev', async () => {
     const nuxt = makeNuxt(true)
     // The exported module is itself the callable `setup` (a NuxtModule),
