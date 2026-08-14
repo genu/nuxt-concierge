@@ -235,6 +235,15 @@ describe.each(INTROSPECTING_DRIVERS)('%s driver introspection contract', (name, 
     expect(failed.items).toHaveLength(1)
     expect(failed.items[0]!.failedReason).toContain('boom')
     expect(runs).toBe(1)
+    // `attempts: 1` above is TOTAL attempts including the first, so this job
+    // is exhausted (and lands in `failed`) after exactly one run. `bullmq`
+    // and `memory` reach `attemptsMade` by different internal conventions —
+    // bullmq's increments ON FAILURE, memory's `job.attempt` increments AT
+    // CLAIM and is the 1-based current attempt — and the two coincide only
+    // at terminal time, which is what the dashboard shows. Asserted here so
+    // that coincidence stays proven rather than assumed: nothing else in
+    // this table touches `attemptsMade` at all.
+    expect(failed.items[0]!.attemptsMade).toBe(1)
 
     await driver.introspect!.retry(queue, id)
     await until(async () => runs >= 2)

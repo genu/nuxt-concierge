@@ -16,6 +16,16 @@ const fakeSupervisor = (over: Partial<{
    * allowed to move past this.
    */
   hangOnRead: boolean
+  /**
+   * Simulates a per-command Redis error reply on an otherwise-established
+   * connection (`LOADING`, `MISCONF`, `OOM`, `READONLY` on a promoted
+   * replica, `CROSSSLOT` on cluster) — distinct from `hangOnRead`: this
+   * REJECTS immediately rather than never settling. `withTimeoutOrThrow`'s
+   * race does nothing for a promise that rejects on its own; only
+   * `buildOverview`'s catch-all is what stops this from taking the whole
+   * `Promise.all` (and so the whole `/overview` response) down.
+   */
+  rejectOnRead: boolean
 }> = {}) => ({
   getState: () => over.state ?? 'running',
   config: {
@@ -36,7 +46,9 @@ const fakeSupervisor = (over: Partial<{
       ? {
           counts: over.hangOnRead
             ? () => new Promise(() => {})
-            : async () => ({ waiting: 1, active: 0, completed: 2, failed: 3, delayed: 0 }),
+            : over.rejectOnRead
+              ? async () => { throw new Error('LOADING Redis is loading the dataset in memory') }
+              : async () => ({ waiting: 1, active: 0, completed: 2, failed: 3, delayed: 0 }),
           list: async () => ({ items: [], total: 0 }),
           get: async () => undefined,
           retry: async () => {},
@@ -44,7 +56,9 @@ const fakeSupervisor = (over: Partial<{
       : undefined,
     workers: over.hangOnRead
       ? () => new Promise(() => {})
-      : async () => over.workers ?? [],
+      : over.rejectOnRead
+        ? () => Promise.reject(new Error('LOADING Redis is loading the dataset in memory'))
+        : async () => over.workers ?? [],
   },
 } as unknown as Supervisor)
 
@@ -116,5 +130,21 @@ describe('buildOverview', () => {
     expect(result.driverHealthy).toBe(false)
     expect(result.queues[0]!.counts).toBeUndefined()
     expect(result.workers).toEqual([])
+  })
+
+  it('still produces a response when a driver read REJECTS rather than hangs', async () => {
+    // Distinct from the hang case above: this promise settles (rejects)
+    // immediately, so `withTimeoutOrThrow`'s race never even gets to its
+    // timeout branch — the failure has to be caught on its own. Before this
+    // fix, `buildOverview`'s `Promise.all` would let this rejection
+    // propagate and the whole `/overview` endpoint would 500.
+    const result = await buildOverview(fakeSupervisor({ rejectOnRead: true }))
+
+    expect(result.queues[0]!.counts).toBeUndefined()
+    expect(result.workers).toEqual([])
+    // `isHealthy()` is untouched by a per-command error reply (it is driven
+    // off connection-level events), so it is NOT asserted false here — the
+    // point of this test is that the response exists at all despite that.
+    expect(result.state).toBe('running')
   })
 })

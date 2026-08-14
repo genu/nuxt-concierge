@@ -1,6 +1,9 @@
+import { consola } from 'consola'
 import { decodePayload } from './envelope'
 import type { Supervisor } from './supervisor'
 import type { DriverCapabilities, DriverIntrospection, JobDetail, JobState, JobSummary, QueueCounts } from './drivers/types'
+
+const logger = consola.create({}).withTag('nuxt-concierge')
 
 /**
  * A decoded payload, or the reason it could not be decoded.
@@ -132,19 +135,38 @@ export const withTimeoutOrThrow = async <T>(promise: Promise<T>, ms: number, mes
 }
 
 /**
- * `buildOverview`'s own flavor: degrades to `undefined` on timeout instead of
- * throwing, because `counts`/`workers` already have an established "unknown
- * right now" representation (`undefined`/`[]`) and `driverHealthy` is what
- * carries the truth about *why* — there is no HTTP status to pick here the
- * way there is for a single-resource route.
+ * `buildOverview`'s own flavor: degrades to `undefined` on ANY failed read —
+ * not just a timeout — because `counts`/`workers` already have an
+ * established "unknown right now" representation (`undefined`/`[]`) and
+ * `driverHealthy` is what carries the truth about *why* — there is no HTTP
+ * status to pick here the way there is for a single-resource route.
+ *
+ * Deliberately catches every rejection, not only `DriverReadTimeoutError`.
+ * `withTimeoutOrThrow` only bounds a read that HANGS; it does nothing for one
+ * that REJECTS, and a rejection is a real, live failure mode here — a
+ * per-command Redis error reply on an otherwise-established connection
+ * (`LOADING`, `MISCONF`, `OOM`, `READONLY` on a promoted replica, `CROSSSLOT`
+ * on cluster) or any command issued after the client has reached `end`.
+ * `buildOverview` runs every queue's `counts()` and the `workers()` read
+ * inside one outer `Promise.all`, so leaving a non-timeout rejection to
+ * propagate would take the WHOLE `/overview` response down over a single
+ * queue's driver error — and `isHealthy()` stays `true` throughout, since
+ * it is driven off connection-level events, not per-command error replies,
+ * so the driver-down banner would not even fire. Logged at warn rather than
+ * swallowed silently, so a developer can see why counts went missing.
  */
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T | undefined> => {
   try {
     return await withTimeoutOrThrow(promise, ms, 'driver read timed out')
   }
   catch (error) {
-    if (error instanceof DriverReadTimeoutError) return undefined
-    throw error
+    logger.warn(
+      error instanceof DriverReadTimeoutError
+        ? '[nuxt-concierge] a driver read timed out while building the dashboard overview'
+        : '[nuxt-concierge] a driver read failed while building the dashboard overview',
+      error,
+    )
+    return undefined
   }
 }
 

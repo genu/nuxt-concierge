@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import OverviewPanel from './panels/OverviewPanel.vue'
 import JobsPanel from './panels/JobsPanel.vue'
 import RegistryPanel from './panels/RegistryPanel.vue'
+import { api } from './api'
 import type { Overview } from './types'
 </script>
 
@@ -30,7 +31,13 @@ const toggleTheme = () => {
 
 const load = async () => {
   try {
-    overview.value = await (await fetch('/_concierge/api/overview')).json()
+    // Goes through `api.overview()`, not a hand-rolled `fetch(...).json()`:
+    // `api.ts`'s `json()` helper checks `res.ok` and throws the server's own
+    // `{ error }` message on a non-200 response. Without it, a 503 body (e.g.
+    // "no introspection", the role-gate's refusal) would be assigned straight
+    // to `overview.value` as if it were a real `Overview` — every field
+    // `undefined` — and this `catch` would never see it.
+    overview.value = await api.overview()
     error.value = undefined
   }
   catch (err) {
