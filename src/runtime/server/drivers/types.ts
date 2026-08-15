@@ -52,6 +52,24 @@ export interface EnqueueOptions {
   /**
    * Set only by a driver's own scheduler when producing a tick, never by
    * `useQueue`. It is what populates `JobContext.cron`.
+   *
+   * HONOURED BY ONE DRIVER OF THREE. `memory` reads it — its own scheduler
+   * (see `arm()` in drivers/memory.ts) attaches it to the job it produces and
+   * the consume loop forwards it straight into `JobContext.cron`. `bullmq`
+   * IGNORES this field entirely: its scheduler derives tick metadata from the
+   * repeatable job's own `repeatJobKey`/`prevMillis` on the produced job
+   * instead (see the scheduling comments in drivers/bullmq.ts), never from an
+   * `EnqueueOptions` the producer passed in. `sync` ignores it too — it has no
+   * scheduler of its own.
+   *
+   * Nothing outside a driver sets this today, so the asymmetry is currently a
+   * trap rather than a live bug. But it is shaped exactly like the retry
+   * divergence this spec exists to prevent: if something is ever tempted to
+   * thread `cron` through `EnqueueJobOptions` so a caller (e.g. `useQueue`, or
+   * a manual "run now") could populate it, that would work in dev on `memory`
+   * and silently do nothing in production on `bullmq`. Whoever does that MUST
+   * make `bullmq` honour this field first and add a conformance case for it in
+   * the shared cron table — otherwise they ship a dev-only feature.
    */
   cron?: { tick: number, expression: string, tz: string }
 }

@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   CONCIERGE_SCHEDULE_PREFIX,
   CRON_DEFAULT_TZ,
+  logger,
   nextFireTime,
   planReconciliation,
   reconcileSchedules,
@@ -295,5 +296,46 @@ describe('reconcileSchedules', () => {
       defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     expect(fake.calls.specs[0]).toMatchObject({ attempts: 3, backoff: { type: 'exponential', delay: 1000 } })
+  })
+
+  it('isolates a failing queue so the next queue still reconciles', async () => {
+    // Before this fix, one queue's `schedule.list` throw propagated out of the
+    // whole `for` loop and skipped every queue after it — including a
+    // PERSISTENT failure (a bad ACL rule, a corrupted key type), which means
+    // those later queues would never be reconciled on any boot at all, not
+    // just this one.
+    const calls = { upserts: [] as string[], removals: [] as string[] }
+    const schedule = {
+      list: async (queue: string) => {
+        if (queue === 'broken') throw new Error('ACL rule denies read')
+        return []
+      },
+      upsert: async (_q: string, spec: ScheduleSpec) => { calls.upserts.push(spec.id) },
+      remove: async (_q: string, id: string) => { calls.removals.push(id) },
+    }
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+    await reconcileSchedules({
+      schedule,
+      jobs: [
+        { name: 'broken-job', queue: 'broken', cron: { expression: '0 * * * *', tz: 'UTC' } },
+        { name: 'healthy-job', queue: 'healthy', cron: { expression: '0 * * * *', tz: 'UTC' } },
+      ],
+      queues: ['broken', 'healthy'],
+      enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+    })
+
+    // Both halves matter together: the failing queue must be REPORTED (a
+    // silently swallowed error is as bad as the one this fix removes), and the
+    // healthy queue's upsert must still have run (fail-fast would have lost
+    // it).
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"broken"'),
+      expect.any(Error),
+    )
+    expect(calls.upserts).toEqual([schedulerIdFor('healthy-job')])
+
+    warn.mockRestore()
   })
 })

@@ -215,3 +215,43 @@ or deduplication again.
   which does not have this blind spot, and was left unchanged rather than downgraded to match the
   brief's suggested one-liner. The one-liner was still run locally, as this task's own rules
   required, purely as a sanity check — see the task report.
+
+## Facts found only by the whole-branch review, after all 14 tasks were green
+
+- **A requirement can be lost between spec and plan even when both are detailed, and this spec's
+  own missed-tick backfill guarantee is the proof.** The spec — and the shipped README — state
+  unqualified that "a missed window produces at most one catch-up run, never a backfill." The
+  spec also explicitly calls for a conformance case covering it. No task in the 14-task plan was
+  ever assigned that case, on either driver, and none of tasks 7-9's own test coverage happened to
+  exercise a *late-firing* timer (every existing scheduling test lets the timer fire on or near
+  schedule). The result shipped broken: `memory.ts`'s `arm()` computed the next tick from the
+  *previous scheduled tick* (`current.next`) rather than from `Date.now()` when the fire callback
+  ran, so once a real timer fires late — a suspended laptop, a blocked event loop, an NTP jump —
+  `current.next` is already in the past, `delay` computes to `0`, and the re-armed timer fires
+  again immediately, replaying every missed window in a chained `setTimeout(…, 0)` loop. Measured
+  directly: `* * * * *` with the clock advanced 10m30s before the pending timer was allowed to run
+  produced 11 waiting jobs; the fix (`Math.max(current.next, Date.now())`) bounds it to 1. `bullmq`
+  never had this bug — its own `job-scheduler.js` sets `now = max(Date.now(), prevMillis)` before
+  computing the next tick, by the same reasoning — so this was a `memory`-only defect, but the
+  spec's conformance requirement was never satisfied for either driver until this review added
+  `test/unit/cron-dedup-conformance.test.ts`'s "a timer that fires late does not replay every
+  missed tick" case (fake-timers, `memory` only — see that test's own comment for why the
+  equivalent stall cannot be simulated against `bullmq` without a real multi-minute wait). The
+  general lesson: "the plan covers the spec" is an assumption that needs checking against the
+  spec's own explicit requirements line by line, not just against the plan's task list — a
+  detailed plan can still silently drop an explicit spec requirement into the gap between two
+  tasks that each looked complete on their own.
+
+- **`backoff` on a scheduler-produced job reaches no assertion on either driver, and is correct by
+  code reading only.** `attempts` on a scheduler-produced tick is asserted in
+  `memory-schedule.test.ts` (via `introspect.list('waiting', ...)`, which surfaces
+  `JobSummary.attempts`) and in the lifecycle retry-tick scenario; `backoff` is not, on either
+  driver, anywhere in the suite — `JobSummary` does not carry a `backoff` field at all, so there is
+  no introspectable surface a unit test could assert it through without a real failure-and-retry
+  round trip timed against the backoff delay itself. `reconcileSchedules` resolves
+  `job.backoff ?? defaults.backoff` onto `ScheduleSpec.backoff` identically to `attempts`, and both
+  drivers' schedule-production paths forward it the same way `attempts` is forwarded (verified by
+  reading `bullmq.ts`'s `upsertJobScheduler` call and `memory.ts`'s `arm()`'s `driverSelf.enqueue`
+  call side by side with the `attempts` forwarding next to each). Recorded here rather than left
+  silent, as the project's own convention for exactly this shape of gap (see the debounce-`replace`
+  gap above) requires.

@@ -248,7 +248,7 @@ export const buildOverview = async (
  * driver did not respond within 1500ms — it may be unreachable" rather than a
  * generic "503 Service Unavailable" with no cause.
  */
-const driverTimeoutMessage = (driverName: string, timeoutMs: number): string =>
+export const driverTimeoutMessage = (driverName: string, timeoutMs: number): string =>
   `the ${driverName} driver did not respond within ${timeoutMs}ms — it may be unreachable`
 
 /**

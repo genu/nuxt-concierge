@@ -471,9 +471,18 @@ record that a tick was missed.
 
 One new **Schedules panel**: job name, queue, expression, timezone, next fire, iteration count,
 sourced from `driver.schedule.list()`. Plus a **run-now** button, which is `enqueue` with the
-static cron payload and `ctx.cron.tick` set to now. Retry already established that the dev
-dashboard performs writes ([drivers/types.ts:128-142](../src/runtime/server/drivers/types.ts)), so
-this needs no new security argument — spec 4's registration-time gating covers it unchanged.
+static cron payload — and deliberately leaves `ctx.cron` **undefined** rather than fabricating a
+tick. The natural implementation would route through `EnqueueOptions.cron`
+([drivers/types.ts](../src/runtime/server/drivers/types.ts)), but that field is honoured by
+`memory`'s own scheduler only — `bullmq` derives its tick metadata from the produced job's own
+`repeatJobKey`/`prevMillis` instead and ignores anything a producer passes in, and `sync` ignores
+it too. Populating it from a manual run-now would work in dev on `memory` and do nothing in
+production on `bullmq`: a dev-only feature. `ctx.cron === undefined` is also arguably the more
+honest signal for a manual run anyway — it distinguishes "a human pressed a button" from "the
+schedule fired" — so a handler must treat `ctx.cron` as optional and never do `ctx.cron!.tick`.
+Retry already established that the dev dashboard performs writes
+([drivers/types.ts:128-142](../src/runtime/server/drivers/types.ts)), so this needs no new
+security argument — spec 4's registration-time gating covers it unchanged.
 
 **No dedup panel.** A deduplicated job does not exist to be listed. The only real signal is
 BullMQ's `deduplicated` event, and consuming it would mean introducing a push mechanism into an

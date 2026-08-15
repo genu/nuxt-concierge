@@ -5,12 +5,16 @@
 // the named form and gets away with it only because Node resolves BullMQ's CJS
 // build. Verified by direct execution; do not "tidy" this back.
 import cronParser from 'cron-parser'
+import { consola } from 'consola'
 import type { AnyJobDefinition, BackoffOptions, CronSpec } from './types'
 import type { DriverScheduling, ScheduleSpec, ScheduleSummary } from './drivers/types'
 import { formatIssuePath } from './validate'
 import type { JobDefaults } from '../../options'
 
 const { parseExpression } = cronParser
+
+/** Exported so tests can spy on it instead of asserting on console output. */
+export const logger = consola.create({}).withTag('nuxt-concierge')
 
 export const CRON_DEFAULT_TZ = 'UTC'
 
@@ -212,32 +216,47 @@ export const reconcileSchedules = async (
   { schedule, jobs, queues, enabled, defaults }: ReconcileArgs,
 ): Promise<void> => {
   for (const queue of queues) {
-    const declared: ScheduleSpec[] = enabled
-      ? jobs
-          .filter(job => job.cron && job.queue === queue)
-          .map(job => ({
-            id: schedulerIdFor(job.name),
-            jobName: job.name,
-            expression: job.cron!.expression,
-            tz: job.cron!.tz,
-            payload: job.cron!.payload,
-            // Resolved HERE, not left for the driver to default: see the
-            // `attempts` doc comment on ScheduleSpec for why an unresolved
-            // value silently strips a scheduled job's retry policy.
-            attempts: job.attempts ?? defaults.attempts,
-            backoff: job.backoff ?? defaults.backoff,
-          }))
-      // Disabled runs the sweep with an EMPTY declared set rather than
-      // skipping it, so "off" means off in Redis rather than merely off in
-      // this process.
-      : []
+    // Isolated PER QUEUE, not just at the supervisor's outer call site. Parked
+    // once on the reasoning that per-queue isolation "would add a partial-
+    // success state harder to reason about" — but partial success is already
+    // reachable here (every upsert runs before any remove), and a PERSISTENT
+    // per-queue error (a bad ACL rule, a corrupted key type) means every queue
+    // after this one in `queues` is never reconciled on ANY boot, not just
+    // this one. That is exactly the failure the spec calls worse than a
+    // missed tick when it rejects version-gating the prune: "A missed tick is
+    // visible; a schedule that quietly stops being reconciled is not." A
+    // transient failure still self-heals on the next boot, same as before.
+    try {
+      const declared: ScheduleSpec[] = enabled
+        ? jobs
+            .filter(job => job.cron && job.queue === queue)
+            .map(job => ({
+              id: schedulerIdFor(job.name),
+              jobName: job.name,
+              expression: job.cron!.expression,
+              tz: job.cron!.tz,
+              payload: job.cron!.payload,
+              // Resolved HERE, not left for the driver to default: see the
+              // `attempts` doc comment on ScheduleSpec for why an unresolved
+              // value silently strips a scheduled job's retry policy.
+              attempts: job.attempts ?? defaults.attempts,
+              backoff: job.backoff ?? defaults.backoff,
+            }))
+        // Disabled runs the sweep with an EMPTY declared set rather than
+        // skipping it, so "off" means off in Redis rather than merely off in
+        // this process.
+        : []
 
-    const { upserts, removals } = planReconciliation({
-      declared,
-      existing: await schedule.list(queue),
-    })
+      const { upserts, removals } = planReconciliation({
+        declared,
+        existing: await schedule.list(queue),
+      })
 
-    for (const spec of upserts) await schedule.upsert(queue, spec)
-    for (const id of removals) await schedule.remove(queue, id)
+      for (const spec of upserts) await schedule.upsert(queue, spec)
+      for (const id of removals) await schedule.remove(queue, id)
+    }
+    catch (error) {
+      logger.warn(`[nuxt-concierge] schedule reconciliation failed for queue "${queue}"`, error)
+    }
   }
 }

@@ -141,9 +141,11 @@ concierge: {
 > reconciliation — it runs the sweep with an *empty* declared set, so every
 > concierge-owned schedule is removed from Redis. An instance with it `false` will prune
 > the schedules of an instance with it `true`, because neither knows about the other.
-> Setting it inconsistently across a fleet makes schedules flap. Also overridable live via
-> `NUXT_CONCIERGE_CRON_ENABLED=false`, which is exactly why this needs to be set the same
-> way everywhere.
+> Setting it inconsistently across a fleet makes schedules flap. Also overridable via
+> `NUXT_CONCIERGE_CRON_ENABLED=false` — **boot-time only, not live**: reconciliation runs once
+> at boot, so this env var takes effect on the next restart of a given instance, not
+> immediately on a running one. Which is exactly why this needs to be set the same way
+> everywhere.
 
 ## Defining jobs
 
@@ -489,7 +491,12 @@ requeue in bulk, or edit a job's payload. "Run now", on the Schedules panel, enq
 off-schedule run of a cron job through the exact same `useQueue().enqueue` path a real
 production caller would use — including its `unique` policy, so a job with `unique` set can
 report a deduplication notice instead of a fresh id if an identical run is already
-in flight.
+in flight. It delivers the job's static cron payload but **leaves `ctx.cron` undefined**,
+deliberately — `EnqueueOptions.cron` is honoured by the `memory` scheduler only (see its doc
+comment in `drivers/types.ts`), so a run-now cannot fabricate a real tick without diverging
+by driver. An undefined `ctx.cron` is also the more honest signal here anyway: it distinguishes
+"a human pressed a button" from "the schedule fired", which is why every handler should treat
+`ctx.cron` as optional (`ctx.cron?.tick`) rather than assuming it is always set.
 
 Introspection is a capability of the active driver, not a fixed feature:
 

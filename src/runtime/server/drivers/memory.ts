@@ -321,7 +321,14 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       })
 
       current.iterationCount++
-      current.next = nextFireTime(current.spec.expression, current.spec.tz, current.next)
+      // Advance from NOW when the timer fired late, not from the tick it was
+      // supposed to serve. A suspended laptop, a blocked event loop or an NTP
+      // jump can leave `next` well in the past — computing the following tick
+      // from it would put that one in the past too, re-arm at delay 0, and
+      // replay every missed window in a chained setTimeout loop. bullmq skips
+      // missed windows the same way (`now = max(Date.now(), prevMillis)` in
+      // job-scheduler.js), and the README promises at most one catch-up run.
+      current.next = nextFireTime(current.spec.expression, current.spec.tz, Math.max(current.next, Date.now()))
       arm(key)
     }, delay)
     // Never holds the process open on its own — only real work should. Matches

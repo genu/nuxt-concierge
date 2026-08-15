@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSyncDriver } from '../../src/runtime/server/drivers/sync'
 import { createMemoryDriver } from '../../src/runtime/server/drivers/memory'
 import { createBullmqDriver } from '../../src/runtime/server/drivers/bullmq'
@@ -245,6 +245,74 @@ for (const { name, create, skip } of DRIVERS) {
 
       await driver.schedule!.remove(queue, id)
     }, 20_000)
+
+    it.skipIf(name !== 'memory')(
+      'a timer that fires late does not replay every missed tick — bounds waiting jobs after a stall',
+      async () => {
+        // Regression for the missed-tick backfill defect fixed in `arm()`
+        // (drivers/memory.ts): it used to advance `next` from the PREVIOUS
+        // scheduled tick rather than from `Date.now()`, so once the process
+        // timer fires late — a suspended laptop, a blocked event loop, an NTP
+        // jump — `next` is already in the past, `delay` computes to 0, and the
+        // re-armed timer fires again immediately, replaying every missed
+        // window in a chained `setTimeout(…, 0)` loop. The reviewer's repro:
+        // `* * * * *` with the clock advanced 10m30s before the pending timer
+        // is allowed to run produced 11 waiting jobs pre-fix; the fix bounds
+        // it to 1. The README promises "at most one catch-up run, never a
+        // backfill" and the spec required a conformance case for this that no
+        // task in the plan was ever assigned.
+        //
+        // Fake timers only make sense here for `memory` — its scheduler is a
+        // chain of real Node `setTimeout`s, so jumping the fake clock forward
+        // in one step genuinely simulates a stalled timer. `bullmq`'s
+        // equivalent schedule is computed server-side by BullMQ's own repeat
+        // strategy against Redis; faking THIS process's clock does not stall
+        // it, and reproducing a genuinely late BullMQ tick would need a real
+        // multi-minute wait this table does not attempt. `bullmq` already
+        // does not have this bug by inspection — its `job-scheduler.js` sets
+        // `now = max(Date.now(), prevMillis)` before computing the next
+        // tick — but that is verified by code reading only, not exercised by
+        // this case.
+        vi.useFakeTimers()
+        try {
+          const start = new Date('2027-01-01T00:59:59Z')
+          vi.setSystemTime(start)
+
+          driver = create()
+          await driver.init()
+          const jobName = `stall-${Date.now()}`
+          const id = schedulerIdFor(jobName)
+
+          // Scheduled first tick is 2027-01-01T01:00:00Z, one second away.
+          await driver.schedule!.upsert(queue, { id, jobName, expression: '* * * * *', tz: 'UTC' })
+
+          // The timer fires LATE: jump the clock forward past ten more
+          // one-minute windows BEFORE letting the pending timer actually
+          // run, rather than advancing tick-by-tick through each scheduled
+          // instant — `advanceTimersByTimeAsync` alone would land the fake
+          // clock exactly on each timer's own scheduled time, which is
+          // indistinguishable from firing on time and would pass even
+          // against the pre-fix code. `setSystemTime` first, then a small
+          // `advanceTimersByTimeAsync` to let the now-overdue timer actually
+          // run, is the same technique this file's sibling
+          // (`memory-schedule.test.ts`, "carrying the tick time") uses to
+          // tell the scheduled instant apart from the moment the timer fires.
+          vi.setSystemTime(new Date(start.getTime() + 1_000 + 10 * 60_000 + 30_000))
+          await vi.advanceTimersByTimeAsync(2_000)
+
+          const { waiting } = await driver.introspect!.counts(queue)
+          // Bounded, not asserted to exactly 1 — delivery is at-least-once.
+          // 2 is tight enough to fail a backfill (11, pre-fix) while
+          // tolerating an ordinary one-more-tick race.
+          expect(waiting).toBeLessThanOrEqual(2)
+
+          await driver.schedule!.remove(queue, id)
+        }
+        finally {
+          vi.useRealTimers()
+        }
+      },
+    )
   })
 
   describe.skipIf(skip)(`${name} driver — dedup conformance`, () => {

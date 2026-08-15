@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DriverReadTimeoutError, readSchedules } from '../../../src/runtime/server/introspect'
 import { readAllSchedules } from '../../../src/runtime/server/routes/api/schedules-list'
-import type { DriverScheduling, ScheduleSummary } from '../../../src/runtime/server/drivers/types'
+import { runScheduleNow } from '../../../src/runtime/server/routes/api/schedules-run'
+import type { DriverScheduling, EnqueueResult, ScheduleSummary } from '../../../src/runtime/server/drivers/types'
 
 describe('readSchedules', () => {
   it('returns the driver list', async () => {
@@ -65,5 +66,29 @@ describe('readAllSchedules', () => {
     // NAMED (silently dropping it would under-report with no explanation).
     expect(result.items).toEqual([{ id: 'ok', jobName: 'sweep', queue: 'default', expression: '0 * * * *', tz: 'UTC' }])
     expect(result.unreadableQueues).toEqual(['stuck'])
+  })
+})
+
+describe('runScheduleNow', () => {
+  it('resolves with the enqueue result on the happy path', async () => {
+    const enqueue = vi.fn(() => Promise.resolve<EnqueueResult>({ id: 'mem-1', deduplicated: false }))
+    await expect(runScheduleNow(enqueue, 'memory')).resolves.toEqual({ id: 'mem-1', deduplicated: false })
+  })
+
+  it('rejects with DriverReadTimeoutError instead of hanging forever against a dead driver', async () => {
+    // Same shape as the jobs/schedules-list hang: `useQueue().enqueue()` ends
+    // in a real driver write, and a dead-Redis connection never settles it —
+    // it sits in ioredis's offline queue forever. Before this fix, the
+    // dashboard's "Run now" button would hang silently instead of the route
+    // resolving to a 503.
+    const enqueue = vi.fn(() => new Promise<EnqueueResult>(() => {}))
+    await expect(runScheduleNow(enqueue, 'bullmq', 10))
+      .rejects.toBeInstanceOf(DriverReadTimeoutError)
+  })
+
+  it('names the driver and the bound in the timeout message', async () => {
+    const enqueue = vi.fn(() => new Promise<EnqueueResult>(() => {}))
+    await expect(runScheduleNow(enqueue, 'bullmq', 10))
+      .rejects.toThrow(/bullmq driver did not respond within 10ms/)
   })
 })
