@@ -1,6 +1,7 @@
 import { describe, it, expectTypeOf } from 'vitest'
 import { z } from 'zod'
 import { defineJob } from '../../src/runtime/server/handlers/defineJob'
+import { useQueue } from '../../src/runtime/server/utils/useQueue'
 import type { TypedQueue } from '../../src/runtime/server/utils/useQueue'
 import type { EnqueueInputOf } from '../../src/runtime/server/types'
 
@@ -94,3 +95,7 @@ const digest = defineJob({
 })
 
 expectTypeOf<EnqueueInputOf<typeof digest>>().toEqualTypeOf<{ scope: string }>()
+
+// The return type is the deliverable here: a runtime test passes whether or
+// not `deduplicated` is typed, because a spy accepts any call shape.
+expectTypeOf(useQueue().enqueue).returns.resolves.toEqualTypeOf<{ id: string, deduplicated: boolean }>()
