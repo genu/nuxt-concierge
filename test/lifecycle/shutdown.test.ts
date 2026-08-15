@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import {
   spawnApp, waitForReady, waitForActiveCount, waitForCompletedJobs,
   enqueue, readLog, waitForExit, cleanup, summarise, flushRedis,
@@ -50,6 +51,42 @@ describe('boot smoke test', () => {
     expect(body.role).toBe('both')
     expect(body.queues).toContain('default')
   }, 60_000)
+})
+
+/**
+ * `ps` rather than a node API: node exposes no `getpgid`, and the only thing
+ * that can answer "which process group is this pid in" is the OS.
+ */
+const pgidOf = (pid: number): number => {
+  const out = execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+  if (!out) throw new Error(`ps reported no process group for pid ${pid} — is the process already gone?`)
+  return Number(out)
+}
+
+describe('process isolation', () => {
+  it('spawns the app into its own process group, beyond the reach of the runner\'s signals', async () => {
+    // The guarantee: a signal aimed at the TEST RUNNER's process group — a
+    // Ctrl-C, an IDE/CI stop button, `kill -TERM -<pgid>` — must not reach the
+    // apps this harness spawns. Nothing about the app is wrong when it does:
+    // it drains cleanly and exits 0 exactly as designed, just mid-scenario,
+    // which surfaces as an unrelated-looking `app exited early with code 0`
+    // from whichever wait happened to be running. That is issue #23, and it
+    // is unfalsifiable from the failure alone — which is why the isolation
+    // that prevents it is asserted here rather than left implicit in a
+    // `detached: true` flag that any future edit could drop silently.
+    //
+    // Deliberately does NOT wait for readiness: a process group is assigned at
+    // spawn time, so this needs no booted app, and paying a full boot for it
+    // would make an assertion this cheap look expensive enough to delete.
+    app = await spawnApp({ driver: 'memory', role: 'both' })
+
+    // `detached: true` makes node call setsid(), so the child leads its own
+    // group and its pgid equals its pid. Asserting that (not just "differs
+    // from the runner's") is what pins the mechanism: an inherited group would
+    // also differ from the runner's if the runner itself were ever re-parented.
+    expect(pgidOf(app.proc.pid!)).toBe(app.proc.pid)
+    expect(pgidOf(app.proc.pid!)).not.toBe(pgidOf(process.pid))
+  }, 30_000)
 })
 
 describe.each(DRIVERS)('lifecycle: %s driver', (driver) => {
