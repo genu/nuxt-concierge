@@ -492,6 +492,51 @@ export const waitForLogCount = async (app: AppHandle, count: number, timeoutMs =
   throw new Error(`log did not reach ${count} lines within ${timeoutMs}ms`)
 }
 
+/**
+ * Waits for `count` DISTINCT jobs to have completed — not for the log to reach
+ * `count` lines.
+ *
+ * Use this whenever the assertion that follows is about distinct jobs.
+ * `waitForLogCount` counts lines, which is a PROXY for that, and a proxy a
+ * scenario does not control: any line satisfies it, including one written by a
+ * fixture the scenario is not exercising. That is not theoretical — it is
+ * precisely how a stray cron line let CI's SIGKILL-recovery scenario satisfy
+ * "10 lines" with only 9 real completions and then assert `completed.size` was
+ * 10 by luck. On a slower runner the tenth completion landed first, the count
+ * became 11, and the scenario failed. Polling the same quantity the assertion
+ * checks removes that race entirely: it cannot be satisfied early by something
+ * the test is not asserting about.
+ *
+ * Lines with no numeric `jobId` are IGNORED here rather than rejected. That is
+ * deliberate and complementary to `summarise`, which throws on them: the wait's
+ * job is to not be fooled, the summary's job is to surface why. If this threw
+ * instead, a scenario would fail at the wait with the log half-written, which
+ * is a worse place to diagnose from.
+ *
+ * Retries of the SAME job do not advance this count — they append a line with
+ * the same `jobId`. `test/lifecycle/dashboard.test.ts` depends on that
+ * distinction and correctly uses `waitForLogCount` instead, because "the retry
+ * re-ran the job" IS a statement about line count.
+ */
+export const waitForCompletedJobs = async (
+  app: AppHandle,
+  count: number,
+  timeoutMs = 10_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  const distinct = () =>
+    new Set(readLog(app).filter(l => typeof l.jobId === 'number').map(l => l.jobId)).size
+
+  while (Date.now() < deadline) {
+    if (distinct() >= count) return
+    await new Promise(r => setTimeout(r, 25))
+  }
+
+  throw new Error(
+    `only ${distinct()} distinct job(s) completed within ${timeoutMs}ms, expected ${count}`,
+  )
+}
+
 export const waitForExit = (app: AppHandle, timeoutMs = 40_000): Promise<number | null> =>
   new Promise((resolve, reject) => {
     if (app.proc.exitCode !== null) return resolve(app.proc.exitCode)
