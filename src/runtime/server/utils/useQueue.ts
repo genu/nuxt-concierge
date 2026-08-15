@@ -7,10 +7,15 @@ export interface EnqueueJobOptions {
   delay?: number
 }
 
-export interface TypedQueue<Map> {
-  enqueue: <K extends keyof Map>(
+/**
+ * `JobMap`, not `Map`: a type parameter named `Map` shadows the global `Map`
+ * for the whole interface body. Harmless while the body never needs the real
+ * one, and a trap for the first edit that does.
+ */
+export interface TypedQueue<JobMap> {
+  enqueue: <K extends keyof JobMap>(
     name: K,
-    payload: Map[K],
+    payload: JobMap[K],
     opts?: EnqueueJobOptions,
   ) => Promise<EnqueueResult>
 }
