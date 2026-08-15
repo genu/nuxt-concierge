@@ -65,6 +65,25 @@ for a `default` queue nobody asked for.
   app program, where the nitro-scoped declaration was invisible.
 - Fixed all 12 pre-existing `typecheck` errors and added `typecheck` to CI.
 
+## [2.0.0-alpha.2](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha.1...nuxt-concierge-v2.0.0-alpha.2) (2026-08-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* dev-only DevTools dashboard and driver introspection SPI (spec 4) ([#28](https://github.com/genu/nuxt-concierge/issues/28))
+* typed enqueue, dual-side payload validation and per-job retries ([#19](https://github.com/genu/nuxt-concierge/issues/19))
+
+### 🚀 Features
+
+* cron scheduling and job deduplication (spec 5) ([#29](https://github.com/genu/nuxt-concierge/issues/29)) ([36beb2d](https://github.com/genu/nuxt-concierge/commit/36beb2d2c133ef0cadd09ae5037cc501c50f40da))
+* dev-only DevTools dashboard and driver introspection SPI (spec 4) ([#28](https://github.com/genu/nuxt-concierge/issues/28)) ([4336dc5](https://github.com/genu/nuxt-concierge/commit/4336dc566f263784b2c4b90ae363d678d300c01b))
+* typed enqueue, dual-side payload validation and per-job retries ([#19](https://github.com/genu/nuxt-concierge/issues/19)) ([8fc1fd5](https://github.com/genu/nuxt-concierge/commit/8fc1fd58dde14fd04d07bd36446f9f4e94499c02))
+
+
+### 📖 Documentation
+
+* spec 3 decisions record ([#27](https://github.com/genu/nuxt-concierge/issues/27)) ([5c74b43](https://github.com/genu/nuxt-concierge/commit/5c74b43900faefeedb707eda958cc1a2b3c928f3))
+
 ## [2.0.0-alpha.1](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha...nuxt-concierge-v2.0.0-alpha.1) (2026-08-13)
 
 
