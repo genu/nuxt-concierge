@@ -326,7 +326,26 @@ export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle
   // sweep would fall through to a plain `proc.kill()` on just the `pnpm`
   // wrapper and leave the forked `nuxi` child (and the port) behind.
   detachedGroups.add(proc)
-  proc.once('exit', () => { spawned.delete(proc); detachedGroups.delete(proc) })
+  // Reaps the GROUP here, not just the handle's bookkeeping. A process group
+  // outlives its leader, so if the `pnpm` wrapper exits before the `nuxi` child
+  // it forked, the two deletes below hand the sweep an empty set while that
+  // child is still running and still holding the port. `killAll` iterates
+  // `spawned`, so once this handler has run there is nothing left for it to
+  // find — the leak would survive every later cleanup, including the
+  // SIGINT/SIGTERM one, and land in the NEXT run as a stray process on a port
+  // this suite wants.
+  //
+  // Killing here rather than retaining the pgid for the sweep to signal later
+  // is deliberate: a pid cannot be recycled while it is still in use as a
+  // process-group id, so `-proc.pid` is unambiguous at exactly this moment and
+  // stops being so afterwards. Retained state would have to re-check liveness
+  // before every use to avoid signalling whatever group later owns the number.
+  proc.once('exit', () => {
+    try { if (proc.pid) process.kill(-proc.pid, 'SIGKILL') }
+    catch { /* group already empty */ }
+    spawned.delete(proc)
+    detachedGroups.delete(proc)
+  })
 
   let stdout = ''
   let stderr = ''
@@ -343,13 +362,11 @@ export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle
     proc,
     port,
     logPath,
-    // Deliberately NOT gated on `detachedGroups` membership (unlike `killAll`'s
-    // sweep, which iterates a set the `once('exit')` handler above has already
-    // pruned). A process group outlives its leader: if the top-level `pnpm`
-    // wrapper exits before the `nuxi` child it forked, gating here would fall
-    // through to `proc.kill()` on the already-reaped wrapper — a no-op — and
-    // leave the forked child holding the port, which is the exact leak the
-    // group-kill exists to prevent.
+    // Deliberately NOT gated on `detachedGroups` membership the way `killAll`'s
+    // sweep is. That set is pruned by the `once('exit')` handler above, so
+    // gating here would fall through to `proc.kill()` on an already-reaped
+    // `pnpm` wrapper — a no-op — while the `nuxi` child it forked kept the
+    // port. The handler above closes that same hole from the other side.
     stop: () => {
       try {
         if (proc.pid) process.kill(-proc.pid, 'SIGKILL')

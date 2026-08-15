@@ -581,7 +581,7 @@ pnpm lint
 pnpm test
 pnpm test:watch
 
-# Run the lifecycle harness (11 scenarios without Redis, 24 with)
+# Run the lifecycle harness (12 scenarios without Redis, 25 with)
 pnpm test:lifecycle
 REDIS_URL=redis://127.0.0.1:6379 pnpm test:lifecycle
 ```
