@@ -108,4 +108,35 @@ describe('memory driver scheduling', () => {
     await driver.close(true)
     expect(await driver.schedule!.list('default')).toEqual([])
   })
+
+  it('carries attempts onto the job it produces when the tick arrives', async () => {
+    // The other half of the defect fixed in reconcileSchedules: a
+    // scheduler-produced job must carry the SAME attempts/backoff the spec
+    // was upserted with, or it silently falls back to this driver's own bare
+    // "undefined attempts means one attempt" default on every tick. Nothing
+    // — lifecycle or unit — asserted on this side of the fix before now.
+    // `backoff` is not observable through `introspect` (JobSummary carries
+    // only `attempts`/`attemptsMade`), so this only asserts `attempts`.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2027-01-01T00:59:59Z'))
+
+    const driver = createMemoryDriver()
+    await driver.schedule!.upsert('default', {
+      ...spec('digest'),
+      attempts: 5,
+      backoff: { type: 'fixed', delay: 250 },
+    })
+
+    // Stay on fake time for the introspection read too: `list('waiting')`
+    // compares the produced job's `runAt` against `Date.now()`, and switching
+    // to real timers here (real "now" is 2026, before this 2027 fixture)
+    // would make the job look `delayed` instead of `waiting`.
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    const { items } = await driver.introspect!.list('default', 'waiting', { offset: 0, limit: 10 })
+    expect(items).toHaveLength(1)
+    expect(items[0]!.attempts).toBe(5)
+
+    await driver.close(true)
+  })
 })

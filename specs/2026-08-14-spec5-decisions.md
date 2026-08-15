@@ -163,6 +163,36 @@ or deduplication again.
   exactly `2`, for the same at-least-once reason every other duplicate-count assertion in this
   project does).
 
+## Facts that cost real time, found in review after this spec shipped
+
+- **A test double that discards the payload it is handed cannot catch a bug in what gets put
+  there.** `reconcileSchedules`'s fix (retry policy resolved onto each `ScheduleSpec`) shipped with
+  zero unit coverage of its own job-level override branch: `test/unit/cron.test.ts`'s
+  `fakeScheduler.upsert` recorded only `spec.id`, so every existing `reconcileSchedules` test could
+  observe *which* schedule was upserted but nothing about what it carried. The defaults-fallback
+  half was accidentally exercised (nothing in the fixtures declared its own `attempts`/`backoff`,
+  so the `?? defaults.attempts` branch always ran), but a job declaring its *own* retry policy had
+  no coverage anywhere — a cheap unit test would have caught the original bug in milliseconds, and
+  none existed because the fake threw the evidence away before an assertion could see it. Fixed by
+  recording the full spec in a parallel `calls.specs` array and adding two tests — one per branch of
+  `job.attempts ?? defaults.attempts` — each confirmed to fail when reverted.
+- **The `memory` driver's half of the same fix had zero coverage anywhere**, lifecycle or unit,
+  before this review: `test/lifecycle/cron.test.ts` is bullmq-only by its own comment, and nothing
+  exercised `memory`'s `arm()` carrying `attempts`/`backoff` into the enqueue it produces. It was
+  correct by code reading only. Added a unit test to `memory-schedule.test.ts` asserting `attempts`
+  on the produced job via `introspect.list('waiting', ...)`; confirmed it fails if `attempts` is
+  dropped from the timer-fired enqueue. `backoff` is not observable through `introspect` —
+  `JobSummary` carries `attempts`/`attemptsMade` only — so this test cannot assert on it and does
+  not pretend to.
+- **The two-worker "bounded runs per tick" scenario could time out for a reason that had nothing to
+  do with a bug.** `startApp` gave each of the two worker processes its own log file, but BullMQ
+  never routes a scheduler's tick back to the producing process — either worker can legitimately
+  execute any given tick. Reading only the first process's log for `countRunsOverTicks` could
+  therefore miss ticks the second process executed and time out on entirely correct behaviour. Same
+  root cause, same fix shape as `shutdown.test.ts`'s SIGKILL-recovery scenario ("same log so the
+  second process appends to the first's records") — `startApp` now accepts a `logPath` option and
+  the second worker is started with the first's.
+
 ## Other facts that cost real time
 
 - **The chrome-devtools MCP server in this environment could not complete a browser connection**

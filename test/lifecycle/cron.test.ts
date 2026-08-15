@@ -37,7 +37,14 @@ describe.runIf(process.env.REDIS_URL)('cron across two workers', () => {
    */
   it('produces exactly one scheduler and bounded runs per tick', async () => {
     const a = await startApp({ role: 'worker' })
-    const b = await startApp({ role: 'worker' })
+    // Same log so the second process appends to the first's records — BullMQ
+    // never routes a scheduler's tick back to the producing process, so
+    // EITHER worker can legitimately execute any given tick. Reading only
+    // `a`'s own log would miss ticks `b` executed and could time out even
+    // though behaviour is correct. Matches the convention already
+    // established for the SIGKILL-recovery scenario in shutdown.test.ts —
+    // do not "tidy" this back to two separate logs.
+    const b = await startApp({ role: 'worker', logPath: a.logPath })
 
     try {
       const schedulers = await a.listSchedulers('default')

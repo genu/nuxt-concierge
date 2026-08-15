@@ -527,6 +527,15 @@ const withQueue = async <T>(queueName: string, fn: (queue: Queue) => Promise<T>)
 export interface StartAppOptions {
   role?: 'web' | 'worker' | 'both'
   failFirstAttempt?: string
+  /**
+   * Shares an existing log file instead of creating a new one — the two-worker
+   * scenario in cron.test.ts passes the FIRST process's `logPath` to the
+   * second so both processes' runs land in the one log a caller reads back,
+   * matching the same "same log so the second process appends to the first's
+   * records" convention `spawnApp`/shutdown.test.ts already establish for the
+   * SIGKILL-recovery scenario.
+   */
+  logPath?: string
 }
 
 export interface CronAppHandle extends AppHandle {
@@ -570,8 +579,11 @@ export interface CronAppHandle extends AppHandle {
  * retry-observing methods alongside the base process controls.
  */
 export const startApp = async (opts: StartAppOptions = {}): Promise<CronAppHandle> => {
-  const logPath = join(tmpdir(), `concierge-cron-${randomUUID()}.log`)
-  writeFileSync(logPath, '')
+  const logPath = opts.logPath ?? join(tmpdir(), `concierge-cron-${randomUUID()}.log`)
+  // Only create/truncate when the caller did not supply an existing path —
+  // truncating a shared logPath here would wipe out whatever the first
+  // process already wrote before the second one started.
+  if (!opts.logPath) writeFileSync(logPath, '')
 
   // Named distinctly from the top-of-file `spawn` import (node:child_process)
   // this whole harness otherwise uses, so nothing here shadows it.

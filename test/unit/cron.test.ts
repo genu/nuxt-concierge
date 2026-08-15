@@ -11,6 +11,7 @@ import {
   validateCronPayloads,
 } from '../../src/runtime/server/cron'
 import { defineJob } from '../../src/runtime/server/handlers/defineJob'
+import type { ScheduleSpec } from '../../src/runtime/server/drivers/types'
 
 describe('resolveCron', () => {
   it('accepts the string shorthand and defaults the timezone to UTC', () => {
@@ -185,11 +186,20 @@ describe('validateCronPayloads', () => {
 })
 
 const fakeScheduler = (existing: string[] = []) => {
-  const calls = { upserts: [] as string[], removals: [] as string[] }
+  // `calls.specs` records the FULL spec handed to `upsert`, not just its id —
+  // `calls.upserts` alone made every job-level `attempts`/`backoff` override
+  // untestable, because the only thing a test could observe was which ids
+  // were upserted, never what they carried. Kept alongside `calls.upserts`
+  // rather than replacing it, since several existing tests in this file
+  // assert on the id list.
+  const calls = { upserts: [] as string[], removals: [] as string[], specs: [] as ScheduleSpec[] }
   return {
     calls,
     schedule: {
-      upsert: async (_q: string, spec: { id: string }) => { calls.upserts.push(spec.id) },
+      upsert: async (_q: string, spec: ScheduleSpec) => {
+        calls.upserts.push(spec.id)
+        calls.specs.push(spec)
+      },
       list: async (queue: string) => existing.map(id => ({
         id, jobName: 'x', queue, expression: '0 * * * *', tz: 'UTC',
       })),
@@ -254,5 +264,36 @@ describe('reconcileSchedules', () => {
       defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     expect(fake.calls.upserts).toEqual([])
+  })
+
+  it('resolves a job\'s own attempts and backoff onto the spec', async () => {
+    const fake = fakeScheduler()
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [{
+        name: 'own', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' },
+        attempts: 7, backoff: { type: 'fixed', delay: 250 },
+      }],
+      queues: ['default'],
+      enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+    })
+    expect(fake.calls.specs[0]).toMatchObject({ attempts: 7, backoff: { type: 'fixed', delay: 250 } })
+  })
+
+  it('falls back to concierge.defaults when the job declares neither', async () => {
+    // The half that shipped broken: a scheduler-produced job used to reach the
+    // driver with NO retry policy at all, taking bullmq's bare attempts: 0 —
+    // whose retry condition is never true — so a cron job dead-lettered on its
+    // first failure while every other attempt of the same job retried normally.
+    const fake = fakeScheduler()
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [{ name: 'bare', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } }],
+      queues: ['default'],
+      enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
+    })
+    expect(fake.calls.specs[0]).toMatchObject({ attempts: 3, backoff: { type: 'exponential', delay: 1000 } })
   })
 })
