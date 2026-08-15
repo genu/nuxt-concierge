@@ -67,9 +67,15 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, 503)
       return { error: error.message }
     }
-    // 409 with the driver's own message, matching the retry route: a dedup
-    // suppression or a validation failure both name their own cause, and
-    // swallowing that into a generic 500 renders as "run failed" with no reason.
+    // 409 with the driver's own message, matching the retry route: a
+    // validation failure or a rejected write names its own cause, and
+    // swallowing that into a generic 500 renders as "run failed" with no
+    // reason.
+    //
+    // A dedup SUPPRESSION does not reach here. It is not an error — the
+    // enqueue resolves with `{ deduplicated: true }` and the route answers 202
+    // carrying that flag, which is the whole point of `EnqueueResult` having
+    // one. Do not wire the panel to expect a 409 for it.
     setResponseStatus(event, 409)
     return { error: error instanceof Error ? error.message : String(error) }
   }

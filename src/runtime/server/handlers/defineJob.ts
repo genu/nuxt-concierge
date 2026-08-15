@@ -73,8 +73,12 @@ export function defineJob(
     throw new Error('[nuxt-concierge] defineJob requires a handler function')
   }
 
+  // A POSITIVE ttl, not merely a defined one. `{ ttl: 0, debounce: true }` used
+  // to pass this check and then resolve to `{ extend: true, replace: true }`
+  // with no expiry — which is the moving lock this error exists to reject,
+  // arriving with no error at all. Same for a negative value.
   if (opts.unique && typeof opts.unique === 'object' && opts.unique.debounce
-    && opts.unique.ttl === undefined) {
+    && !(typeof opts.unique.ttl === 'number' && opts.unique.ttl > 0)) {
     throw new Error(
       '[nuxt-concierge] unique.debounce requires a ttl. Without an expiry, `extend` and '
       + '`replace` produce a lock that keeps moving rather than a debounce window.',

@@ -56,7 +56,15 @@ export const readAllSchedules = async (
  */
 export default defineEventHandler(async (event) => {
   const supervisor = getSupervisor()
-  if (!supervisor?.driver.schedule) {
+  // Two different causes, two different messages, matching `schedules-run.ts`.
+  // Collapsing them into one `!supervisor?.driver.schedule` check told a
+  // developer whose supervisor had not booted yet that their DRIVER lacked
+  // scheduling — sending them to the wrong half of their config.
+  if (!supervisor) {
+    setResponseStatus(event, 503)
+    return { error: 'the supervisor has not started yet' }
+  }
+  if (!supervisor.driver.schedule) {
     setResponseStatus(event, 503)
     return { error: 'this driver does not support scheduling' }
   }

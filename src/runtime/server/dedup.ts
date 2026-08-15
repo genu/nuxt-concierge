@@ -81,12 +81,19 @@ export const resolveDedup = (
 
   const id = uniqueId ? `${jobName}:${uniqueId(payload)}` : defaultDedupId(jobName, payload)
 
-  // `debounce` requires a ttl to mean anything: `extend`/`replace` without one
-  // is BullMQ's replace-with-no-expiry branch, which is a lock that keeps
-  // moving rather than a debounce. Resolution drops it rather than emitting a
-  // combination nobody asked for; Task 4 rejects it at definition time, so this
-  // branch is unreachable from a real job.
-  if (unique.ttl === undefined) return { id }
-  if (unique.debounce) return { id, ttl: unique.ttl, extend: true, replace: true }
-  return { id, ttl: unique.ttl }
+  // `debounce` requires a POSITIVE ttl to mean anything: `extend`/`replace`
+  // without an expiry is BullMQ's replace-with-no-expiry branch, which is a
+  // lock that keeps moving rather than a debounce window. A `ttl` of 0 (or
+  // negative) gives no window at all and lands in exactly that branch, so it
+  // is treated the same as an absent one here rather than passed through.
+  //
+  // `defineJob` rejects the combination at definition time, so this is
+  // unreachable from a job written the normal way — but a hand-built registry
+  // entry reaches `resolveDedup` directly, and the two must not disagree about
+  // what counts as a usable ttl.
+  const ttl = typeof unique.ttl === 'number' && unique.ttl > 0 ? unique.ttl : undefined
+
+  if (ttl === undefined) return { id }
+  if (unique.debounce) return { id, ttl, extend: true, replace: true }
+  return { id, ttl }
 }

@@ -143,6 +143,19 @@ describe('resolveDedup', () => {
       .toEqual({ id: expect.any(String) })
   })
 
+  it('treats a zero or negative ttl as no ttl at all', () => {
+    // `defineJob` rejects these, but a hand-built registry entry reaches
+    // `resolveDedup` directly — and the two must agree on what counts as a
+    // usable ttl. Emitting `{ ttl: 0, extend, replace }` would hand BullMQ the
+    // replace-with-no-expiry branch: a lock that keeps moving.
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 0, debounce: true } }))
+      .toEqual({ id: expect.any(String) })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: 0 } }))
+      .toEqual({ id: expect.any(String) })
+    expect(resolveDedup({ jobName: 'mail', payload: {}, unique: { ttl: -5 } }))
+      .toEqual({ id: expect.any(String) })
+  })
+
   it('prefers a user-supplied uniqueId over the default', () => {
     expect(resolveDedup({
       jobName: 'mail',

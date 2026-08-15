@@ -64,6 +64,12 @@ describe('the built dashboard client', () => {
     // The build-order landmine from spec 4 produces no error of its own — the
     // only symptom is a missing directory in a tarball nobody inspects. This
     // asserts the new panel actually reached the bundle.
+    // Asserted before reading it: `readdirSync` on a missing directory throws
+    // ENOENT, which fails as an unhandled fs error rather than as "the client
+    // did not build" — and a missing `dist/client/assets` is precisely the
+    // symptom the build-order landmine produces.
+    expect(existsSync(resolve(DIST, 'assets'))).toBe(true)
+
     const assets = readdirSync(resolve(DIST, 'assets'))
     const js = assets.filter(f => f.endsWith('.js'))
       .map(f => readFileSync(resolve(DIST, 'assets', f), 'utf8'))

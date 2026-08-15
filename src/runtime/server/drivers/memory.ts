@@ -78,6 +78,20 @@ interface TerminalRecord {
   failedReason?: string
   stack?: string
   dedupId?: string
+  /**
+   * Retained so `introspect.retry` can put it back on the re-queued job.
+   *
+   * `bullmq` keeps this for free — `job.retry()` reuses the same job record,
+   * which still carries `repeatJobKey`/`opts.prevMillis`, so
+   * `cronContextFromJob` reconstructs `ctx.cron` on the retried attempt. This
+   * driver rebuilds the job from a `TerminalRecord` instead, so anything the
+   * record does not hold is lost. Without this, retrying a failed scheduled
+   * job from the dashboard hands the handler `ctx.cron === undefined` — and
+   * `ctx.cron.tick` is exactly what a handler is told to use as its
+   * idempotency key, so it goes missing on the one path most likely to
+   * re-run work that already partly happened.
+   */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 /**
@@ -454,6 +468,19 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
           attempts: record!.attempts,
           backoff: record!.backoff,
           createdAt: record!.createdAt,
+          // Both restored for the same reason: `bullmq`'s `job.retry()` reuses
+          // the original job record, so a retried job there keeps everything it
+          // had. This driver rebuilds from a `TerminalRecord`, so every field
+          // omitted here is silently dropped on retry — and the two that matter
+          // are the ones a handler and the dashboard actually read.
+          //
+          // `cron` carries `ctx.cron.tick`, the idempotency key a scheduled
+          // handler is told to rely on; losing it on retry loses it on the one
+          // path most likely to re-run partly-done work. `dedup` is what keeps
+          // `deduplicationId` visible on the job detail after a retry, which
+          // the conformance table asserts round-trips.
+          cron: record!.cron,
+          dedup: record!.dedupId ? { id: record!.dedupId } : undefined,
         })
       },
     },
@@ -611,6 +638,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             createdAt: job.createdAt,
             finishedAt: Date.now(),
             dedupId: job.dedup?.id,
+            cron: job.cron,
           })
         }
         catch (error) {
@@ -663,6 +691,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               failedReason: error instanceof Error ? error.message : String(error),
               stack: error instanceof Error ? error.stack : undefined,
               dedupId: job.dedup?.id,
+              cron: job.cron,
             })
           }
         }

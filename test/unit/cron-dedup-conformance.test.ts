@@ -453,11 +453,23 @@ for (const { name, create, skip } of DRIVERS) {
       driver.registerHandler(queue, 'j', async () => { throw new Error('boom') })
       driver.consume(queue, { concurrency: 1 })
 
-      await driver.enqueue(queue, {
+      const first = await driver.enqueue(queue, {
         name: 'j', payload: {}, dedup: { id }, attempts: 3,
         backoff: { type: 'fixed', delay: 30_000 },
       })
-      await new Promise(r => setTimeout(r, 500))
+
+      // OBSERVED, not slept for. The claim is that the key survives an
+      // INTERMEDIATE failure, so the first attempt has to have actually failed
+      // and been re-queued before the duplicate goes in. A fixed sleep that
+      // lands while the job is still waiting leaves the key held for the wrong
+      // reason — the job has not run at all — and `deduplicated` is `true`
+      // either way, so the case would pass without exercising a retry. The 30s
+      // backoff is what parks it in `delayed` long enough to observe.
+      await waitFor(
+        async () => (await driver.introspect!.get(queue, first.id))?.state === 'delayed',
+        'the first attempt to fail and the job to be re-queued as delayed',
+        15_000,
+      )
 
       const dup = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
       expect(dup.deduplicated).toBe(true)
@@ -623,6 +635,39 @@ for (const { name, create, skip } of DRIVERS) {
       // either.
       expect(afterA - beforeA).toBe(1)
       expect(afterB - beforeB).toBe(1)
+    })
+
+    it('preserves the dedup id across a dashboard retry', async () => {
+      // `bullmq` gets this for free: `job.retry()` reuses the same job record,
+      // so everything on it survives. `memory` rebuilds the job from a
+      // TerminalRecord, so any field that record does not hold is silently
+      // dropped on retry — which is a divergence in the direction that matters,
+      // since the dashboard retry button is a `memory`-driver path in dev.
+      //
+      // The fresh-enqueue round trip is asserted elsewhere in this file; this
+      // is the half that survives a terminal failure and a re-queue.
+      driver = create()
+      await driver.init()
+      const id = `retry-dedup-${Date.now()}`
+      const q = `${queue}-retry`
+      driver.registerHandler(q, 'j', async () => { throw new Error('boom') })
+      driver.consume(q, { concurrency: 1 })
+
+      const { id: jobId } = await driver.enqueue(q, {
+        name: 'j', payload: {}, dedup: { id }, attempts: 1,
+      })
+      await waitFor(
+        async () => (await driver.introspect!.get(q, jobId))?.state === 'failed',
+        'the job to fail terminally',
+        15_000,
+      )
+      expect((await driver.introspect!.get(q, jobId))?.deduplicationId).toBe(id)
+
+      await driver.introspect!.retry(q, jobId)
+
+      // The assertion the fix exists for. Before it, `memory` returned
+      // undefined here while `bullmq` returned the id.
+      expect((await driver.introspect!.get(q, jobId))?.deduplicationId).toBe(id)
     })
   })
 }

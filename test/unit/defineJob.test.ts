@@ -166,6 +166,24 @@ describe('defineJob unique', () => {
       .toThrow(/debounce requires a ttl/)
   })
 
+  it('rejects debounce with a zero or negative ttl', () => {
+    // A ttl of 0 is not "a ttl" — it is no expiry window, which lands in the
+    // very branch the case above rejects. Checking only for `undefined` let
+    // this through with no error at all, which is worse than the case that
+    // does throw.
+    expect(() => defineJob({ unique: { ttl: 0, debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+    expect(() => defineJob({ unique: { ttl: -1, debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+  })
+
+  it('still accepts debounce with a positive ttl', () => {
+    // Paired with the two rejections above: a guard that threw for every
+    // debounce would satisfy both of them and break the feature.
+    expect(defineJob({ unique: { ttl: 5_000, debounce: true }, handler: async () => {} }).unique)
+      .toEqual({ ttl: 5_000, debounce: true })
+  })
+
   it('leaves unique undefined for an ordinary job', () => {
     expect(defineJob({ handler: async () => {} }).unique).toBeUndefined()
   })
