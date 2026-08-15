@@ -56,6 +56,35 @@ describe('defineJob', () => {
     expect(job.attempts).toBeUndefined()
     expect(job.backoff).toBeUndefined()
   })
+
+  // Rejected HERE as well as in resolveModuleOptions, and for the reason the
+  // `cron` and `unique.debounce` checks are: the throw lands where the job is
+  // written, with that file on the stack, instead of pointing at nuxt.config.
+  it('rejects attempts: 0, which reads as "never" and behaved as "once"', () => {
+    expect(() => defineJob({ attempts: 0, handler: () => {} }))
+      .toThrow(/attempts must be a positive integer, received 0/)
+  })
+
+  it('rejects a negative attempts', () => {
+    expect(() => defineJob({ attempts: -1, handler: () => {} }))
+      .toThrow(/received -1/)
+  })
+
+  it('rejects a non-integer attempts', () => {
+    expect(() => defineJob({ attempts: 2.5, handler: () => {} }))
+      .toThrow(/received 2\.5/)
+  })
+
+  it('names the job in the error when it has one', () => {
+    // A build scans many job files; "attempts must be positive" with no name
+    // makes the user grep for it.
+    expect(() => defineJob({ name: 'send-invoice', attempts: 0, handler: () => {} }))
+      .toThrow(/send-invoice/)
+  })
+
+  it('still accepts attempts: 1, the smallest honest value', () => {
+    expect(defineJob({ attempts: 1, handler: () => {} }).attempts).toBe(1)
+  })
 })
 
 describe('defineJob consumer-side validation', () => {

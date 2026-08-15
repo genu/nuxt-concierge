@@ -7,8 +7,8 @@ This file is the index and the current state.
 | - | ---- | ----- | -------- |
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
 | 3 | **Job API & typed enqueue** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) · [decisions](2026-08-13-spec3-decisions.md) |
-| 4 | **Dashboard & driver introspection** | **Implemented** — merged, not yet released | [design](2026-08-13-concierge-v2-dashboard-design.md) · [plan](plans/2026-08-13-concierge-v2-spec4-dashboard.md) · [decisions](2026-08-13-spec4-decisions.md) |
-| 5 | **Cron & dedup** | **Implemented** — merged, not yet released | [design](2026-08-14-concierge-v2-spec5-cron-dedup.md) · [plan](plans/2026-08-14-concierge-v2-spec5-cron-dedup.md) · [decisions](2026-08-14-spec5-decisions.md) |
+| 4 | **Dashboard & driver introspection** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-dashboard-design.md) · [plan](plans/2026-08-13-concierge-v2-spec4-dashboard.md) · [decisions](2026-08-13-spec4-decisions.md) |
+| 5 | **Cron & dedup** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-14-concierge-v2-spec5-cron-dedup.md) · [plan](plans/2026-08-14-concierge-v2-spec5-cron-dedup.md) · [decisions](2026-08-14-spec5-decisions.md) |
 | 2 | Driver introspection SPI | **Folded into spec 4**, as recommended below | [design](2026-08-13-concierge-v2-dashboard-design.md) |
 
 ## Why the order changed

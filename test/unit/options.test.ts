@@ -98,6 +98,48 @@ describe('resolveModuleOptions', () => {
     })
   })
 
+  describe('defaults.attempts validation', () => {
+    // `attempts` is TOTAL attempts including the first, so 0 reads as "never
+    // run" and behaved as "run once": it is not nullish, so it survived
+    // `entry.attempts ?? defaults.attempts`, and then bullmq's
+    // `attemptsMade + 1 < 0` and memory's `job.attempt < 0` are both never
+    // true. The drivers agreed, so no conformance test caught it — the value
+    // was simply a lie with no guard.
+    it('throws a loud, actionable error for 0', () => {
+      expect(() => resolveModuleOptions({ defaults: { attempts: 0 } }))
+        .toThrow(/concierge\.defaults\.attempts must be a positive integer, received 0/)
+    })
+
+    it('throws for a negative value', () => {
+      expect(() => resolveModuleOptions({ defaults: { attempts: -1 } }))
+        .toThrow(/received -1/)
+    })
+
+    // A fraction does not hang, but `attemptsMade + 1 < 2.5` retains an
+    // off-by-one budget rather than the count the user wrote.
+    it('throws for a non-integer like 2.5', () => {
+      expect(() => resolveModuleOptions({ defaults: { attempts: 2.5 } }))
+        .toThrow(/received 2\.5/)
+    })
+
+    it('does not coerce — a bad value throws rather than silently clamping to 1', () => {
+      // Guards against a "fix" that substitutes 1 for 0. The issue asks for a
+      // loud boot-time failure, because a user who wrote 0 meant something
+      // this module cannot deliver and needs to be told so.
+      expect(() => resolveModuleOptions({ defaults: { attempts: 0 } })).toThrow()
+      expect(() => resolveModuleOptions({ defaults: { attempts: -1 } })).toThrow()
+    })
+
+    it('accepts 1, the smallest honest value', () => {
+      expect(resolveModuleOptions({ defaults: { attempts: 1 } }).defaults.attempts).toBe(1)
+    })
+
+    it('accepts the default when the user supplies nothing', () => {
+      expect(() => resolveModuleOptions({})).not.toThrow()
+      expect(resolveModuleOptions({}).defaults.attempts).toBe(moduleDefaults.defaults.attempts)
+    })
+  })
+
   describe('cron options', () => {
     it('defaults cron.enabled to true', () => {
       expect(resolveModuleOptions({}).cron.enabled).toBe(true)

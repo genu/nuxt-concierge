@@ -2,7 +2,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { BackoffOptions, JobContext, JobDefinition, JobHandler, UniqueOptions } from '../types'
 import type { CronInput } from '../cron'
 import { resolveCron } from '../cron'
-import { validateOnConsume } from '../validate'
+import { validateAttempts, validateOnConsume } from '../validate'
 
 /**
  * `In` defaults to `Out` so the no-schema case (where they are the same type)
@@ -71,6 +71,15 @@ export function defineJob(
 ): JobDefinition<unknown, unknown> {
   if (typeof opts?.handler !== 'function') {
     throw new Error('[nuxt-concierge] defineJob requires a handler function')
+  }
+
+  // Only when declared: `undefined` has to stay legal, because that is what
+  // lets `entry.attempts ?? defaults.attempts` reach the module default at all.
+  // Checked HERE as well as in `resolveModuleOptions`, for the reason the
+  // `cron` and `unique.debounce` checks are: the throw lands where the job is
+  // written, with that file on the stack, rather than pointing at nuxt.config.
+  if (opts.attempts !== undefined) {
+    validateAttempts(opts.attempts, 'attempts', opts.name)
   }
 
   // A POSITIVE ttl, not merely a defined one. `{ ttl: 0, debounce: true }` used

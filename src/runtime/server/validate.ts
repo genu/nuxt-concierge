@@ -27,6 +27,41 @@ export class JobPayloadInvalidError extends Error {
 }
 
 /**
+ * Shared by the two places an `attempts` enters the module — a per-job
+ * `attempts` in `handlers/defineJob.ts` and `concierge.defaults.attempts` in
+ * `src/options.ts` — because they meet at `entry.attempts ?? defaults.attempts`
+ * in `utils/useQueue.ts` and guarding only one of them leaves the other free
+ * to lie.
+ *
+ * `attempts` is the TOTAL run count including the first, so `0` reads as
+ * "never run" and delivered exactly one run: `0` is not nullish, so it
+ * survived the `??` above, and then bullmq's `attemptsMade + 1 < 0` and
+ * memory's `job.attempt < 0` are both never true. Both drivers agreed on the
+ * wrong thing, which is why no conformance test caught it. A fraction is
+ * rejected for the same reason `validateHistoryLimit` rejects one:
+ * `attemptsMade + 1 < 2.5` yields an off-by-one budget rather than the count
+ * the user wrote.
+ *
+ * Rejected, never coerced. Someone who wrote `attempts: 0` wants a job that
+ * never runs, which this module does not offer; clamping to 1 would answer a
+ * question they did not ask and hide the one they did.
+ *
+ * Lives on the runtime side because `src/options.ts` already depends on
+ * `runtime/server` and not the reverse — importing build-time code into a
+ * nitro-bundled handler would drag `defu` and `moduleDefaults` in with it.
+ */
+export const validateAttempts = (attempts: number, label: string, jobName?: string): void => {
+  if (Number.isInteger(attempts) && attempts >= 1) return
+
+  const where = jobName ? ` (job "${jobName}")` : ''
+  throw new Error(
+    `[nuxt-concierge] ${label} must be a positive integer, received ${attempts}${where}. `
+    + 'It counts TOTAL runs including the first, so 1 is the smallest valid value '
+    + 'and there is no value meaning "never run".',
+  )
+}
+
+/**
  * `['user', 'email'] -> 'user.email'`. Standard Schema allows a path segment
  * to be either a raw key or an object wrapping one, so both are handled.
  */
