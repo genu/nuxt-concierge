@@ -3,6 +3,7 @@ import { createSyncDriver } from '../../src/runtime/server/drivers/sync'
 import { createMemoryDriver } from '../../src/runtime/server/drivers/memory'
 import { createBullmqDriver } from '../../src/runtime/server/drivers/bullmq'
 import { schedulerIdFor } from '../../src/runtime/server/cron'
+import { decodePayload } from '../../src/runtime/server/envelope'
 import type { ConciergeDriver } from '../../src/runtime/server/drivers/types'
 
 /**
@@ -38,6 +39,28 @@ describe('enqueue result shape', () => {
 })
 
 const REDIS_URL = process.env.REDIS_URL
+
+/**
+ * Polls a predicate until it is true or `timeoutMs` elapses, throwing a
+ * descriptive error on timeout rather than letting the test hang or fail with
+ * a bare assertion mismatch. Used everywhere a case depends on a real
+ * consumer or a real driver having caught up — readiness must be OBSERVED,
+ * never guessed with a fixed sleep, which is exactly how an earlier task in
+ * this plan shipped a test with ~30ms of slack that failed on jitter with
+ * correct code.
+ */
+const waitFor = async (
+  predicate: () => boolean | Promise<boolean>,
+  label: string,
+  timeoutMs = 8_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise(r => setTimeout(r, 100))
+  }
+  throw new Error(`timed out waiting for ${label}`)
+}
 
 /**
  * ONE table over both drivers, never two files. `depth()` drifted in phase 1
@@ -370,6 +393,168 @@ for (const { name, create, skip } of DRIVERS) {
 
       const dup = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
       expect(dup.deduplicated).toBe(true)
+    })
+
+    it('debounce leaves the LAST payload, not the first', async () => {
+      // What `replace: true` MEANS, verified against a live Queue. The
+      // "debounce collapses a burst onto one job" case above deliberately
+      // asserts only the job-COUNT delta, because that number is identical
+      // under throttle — a survivor carrying the FIRST payload would also
+      // produce one job for three enqueues. Payload identity is the only
+      // thing that tells replace apart from throttle, and until now the only
+      // place asserting it was the memory-only unit test: if BullMQ's
+      // `deduplication.replace` quietly behaved like throttle under the
+      // hood, every existing assertion in this entire suite would still be
+      // green. That is the `attempts: 0` incident in a new location.
+      driver = create()
+      await driver.init()
+      const id = `survivor-${Date.now()}`
+      const dedup = { id, ttl: 60_000, extend: true, replace: true }
+      // Long delay so every enqueue lands while the previous one is still
+      // pending — `replace` only supersedes a job that has not started.
+      const opts = { name: 'j', dedup, delay: 30_000 }
+
+      await driver.enqueue(queue, { ...opts, payload: { n: 1 } })
+      await driver.enqueue(queue, { ...opts, payload: { n: 2 } })
+      const last = await driver.enqueue(queue, { ...opts, payload: { n: 3 } })
+
+      const detail = await driver.introspect!.get(queue, last.id)
+      expect(decodePayload(detail!.envelope)).toEqual({ n: 3 })
+    })
+
+    it('lock mode holds the key while active and releases it on completion', async () => {
+      // The table above only exercises release on an INTERMEDIATE failure
+      // (does NOT release). Nothing before this exercised the opposite,
+      // successful path against a live Queue: hold while genuinely in
+      // flight, then release on finalize. Both halves are asserted, because
+      // "released after" alone would also pass a driver that never holds the
+      // key in the first place.
+      driver = create()
+      await driver.init()
+      const id = `release-complete-${Date.now()}`
+      let started = false
+      driver.registerHandler(queue, 'j', async () => {
+        started = true
+        // Real, short duration so there is a genuine window in which the job
+        // is active (not yet finished) to enqueue a duplicate against.
+        await new Promise(r => setTimeout(r, 500))
+      })
+      driver.consume(queue, { concurrency: 1 })
+
+      const first = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+
+      // Observed readiness, not a guessed sleep: wait for the handler to
+      // actually have started before asserting the key is held.
+      await waitFor(() => started, 'the job to actually start running')
+
+      const whileActive = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+      expect(whileActive.deduplicated).toBe(true)
+      expect(whileActive.id).toBe(first.id)
+
+      await waitFor(
+        async () => (await driver.introspect!.get(queue, first.id))?.state === 'completed',
+        'the job to complete',
+      )
+
+      // Released on completion: this enqueue creates a genuinely NEW job,
+      // not the id the just-finished job held.
+      const afterComplete = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+      expect(afterComplete.deduplicated).toBe(false)
+      expect(afterComplete.id).not.toBe(first.id)
+    }, 10_000)
+
+    it('lock mode releases the key on terminal failure', async () => {
+      // The mirror image of "does NOT release on an intermediate failure":
+      // a job with `attempts: 1` fails PERMANENTLY on its first and only
+      // attempt (moveToFinished, not moveToDelayed), and that path must
+      // release the key — verified here against a live Queue, not just
+      // memory's hand-rolled Lua reimplementation.
+      driver = create()
+      await driver.init()
+      const id = `release-fail-${Date.now()}`
+      driver.registerHandler(queue, 'j', async () => { throw new Error('boom') })
+      driver.consume(queue, { concurrency: 1 })
+
+      const first = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id }, attempts: 1 })
+
+      await waitFor(
+        async () => (await driver.introspect!.get(queue, first.id))?.state === 'failed',
+        'the job to fail terminally',
+      )
+
+      const after = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id } })
+      // Would fail (report deduplicated: true, same id) if the key were held
+      // past a terminal failure the way it correctly is past an
+      // intermediate one.
+      expect(after.deduplicated).toBe(false)
+      expect(after.id).not.toBe(first.id)
+    }, 10_000)
+
+    it('throttle mode releases once the ttl genuinely expires', async () => {
+      // The existing throttle case proves suppression STARTS; nothing waits
+      // out a real TTL against a live Queue to prove it ENDS. Both halves are
+      // asserted: suppressed inside the window, and — the discriminating
+      // half — NOT suppressed once the window has genuinely closed. "Not
+      // suppressed after" alone would also pass a driver that never
+      // suppresses anything.
+      driver = create()
+      await driver.init()
+      const id = `throttle-expiry-${Date.now()}`
+      const ttl = 1_500
+      const first = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id, ttl } })
+
+      const within = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id, ttl } })
+      expect(within.deduplicated).toBe(true)
+      expect(within.id).toBe(first.id)
+
+      // Generous, stated margin: 3x the ttl, not ttl-plus-a-few-ms. An
+      // earlier task in this plan shipped a timing case with ~30ms of slack
+      // that failed on jitter with otherwise-correct code — real Redis
+      // round trips make that risk worse here, not better.
+      await new Promise(r => setTimeout(r, ttl * 3))
+
+      const after = await driver.enqueue(queue, { name: 'j', payload: {}, dedup: { id, ttl } })
+      expect(after.deduplicated).toBe(false)
+      expect(after.id).not.toBe(first.id)
+    }, 10_000)
+
+    it('scopes dedup keys to their queue', async () => {
+      // Mirrors "scopes schedules to their queue" above. The same id on two
+      // queues must not suppress each other — both drivers document keying
+      // dedup by `<queue>::<id>` (memory.ts's `dedupKey`) or BullMQ's own
+      // per-queue `de:` prefix, but nothing before this asserted it at
+      // runtime for either.
+      //
+      // NOT asserted via `b.id !== a.id`: BullMQ job ids are a PER-QUEUE
+      // sequential counter, so two freshly-touched queues legitimately hand
+      // out the same first id — this failed on the very first real-Redis run
+      // for exactly that reason, with scoping working correctly the whole
+      // time. Counted as deltas on EACH queue instead, matching the delta
+      // discipline used elsewhere in this table for the same underlying
+      // reason (a real, never-flushed Redis backend).
+      driver = create()
+      await driver.init()
+      const id = `scope-${Date.now()}`
+      const queueA = `${queue}-a`
+      const queueB = `${queue}-b`
+      const beforeA = (await driver.introspect!.counts(queueA)).waiting
+      const beforeB = (await driver.introspect!.counts(queueB)).waiting
+
+      const a = await driver.enqueue(queueA, { name: 'j', payload: {}, dedup: { id } })
+      const b = await driver.enqueue(queueB, { name: 'j', payload: {}, dedup: { id } })
+
+      const afterA = (await driver.introspect!.counts(queueA)).waiting
+      const afterB = (await driver.introspect!.counts(queueB)).waiting
+
+      expect(a.deduplicated).toBe(false)
+      expect(b.deduplicated).toBe(false)
+      // Both queues gained exactly one NEW job of their own. A scoping bug
+      // that let the second enqueue read across into the first queue's key
+      // would suppress `b` (caught above) and leave queue B's count
+      // unchanged — this is the half that confirms queue A wasn't affected
+      // either.
+      expect(afterA - beforeA).toBe(1)
+      expect(afterB - beforeB).toBe(1)
     })
   })
 }
