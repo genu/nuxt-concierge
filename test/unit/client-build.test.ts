@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import fg from 'fast-glob'
 
@@ -58,5 +58,16 @@ describe('the built dashboard client', () => {
     // consumer's node_modules.
     const CLIENT_SIZE_BUDGET_BYTES = 820_000
     expect(total).toBeLessThan(CLIENT_SIZE_BUDGET_BYTES)
+  })
+
+  it('bundles the Schedules panel', () => {
+    // The build-order landmine from spec 4 produces no error of its own — the
+    // only symptom is a missing directory in a tarball nobody inspects. This
+    // asserts the new panel actually reached the bundle.
+    const assets = readdirSync(resolve(DIST, 'assets'))
+    const js = assets.filter(f => f.endsWith('.js'))
+      .map(f => readFileSync(resolve(DIST, 'assets', f), 'utf8'))
+      .join('')
+    expect(js).toContain('Schedules')
   })
 })

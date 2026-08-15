@@ -12,6 +12,8 @@ export interface Overview {
   /** Undefined when there is no supervisor, so every read must be optional. */
   capabilities?: { persistent: boolean, crossProcess: boolean, history: 'durable' | 'bounded' | 'none' }
   introspectable: boolean
+  /** Whether the driver can schedule at all. Computed server-side. */
+  schedulable: boolean
   version: string
   /** `counts` is absent when the driver has no introspection — not zeroed. */
   queues: Array<{ name: string, concurrency: number, counts?: Record<string, number> }>

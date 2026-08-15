@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import OverviewPanel from './panels/OverviewPanel.vue'
 import JobsPanel from './panels/JobsPanel.vue'
+import SchedulesPanel from './panels/SchedulesPanel.vue'
 import RegistryPanel from './panels/RegistryPanel.vue'
 import { api } from './api'
 import type { Overview } from './types'
@@ -86,6 +87,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       :items="[
         { label: 'Overview', slot: 'overview' },
         { label: 'Jobs', slot: 'jobs' },
+        { label: 'Schedules', slot: 'schedules' },
         { label: 'Registry', slot: 'registry' },
       ]"
       size="xs"
@@ -95,6 +97,9 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </template>
       <template #jobs>
         <JobsPanel :overview="overview" />
+      </template>
+      <template #schedules>
+        <SchedulesPanel :overview="overview" />
       </template>
       <template #registry>
         <RegistryPanel />
