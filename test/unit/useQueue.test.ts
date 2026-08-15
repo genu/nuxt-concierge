@@ -155,16 +155,17 @@ describe('useQueue deduplication', () => {
   it('derives the key from the RAW payload, before any transform', async () => {
     // uniqueId runs on the producer alongside validateOnEnqueue, whose result
     // is discarded — so the key must come from what the caller passed, not
-    // from a transformed value that only exists in the worker. `n` is a string
-    // here and a number after the transform, so a key of "t:n:5" proves the
-    // raw side and "t:n:5" from a transformed payload would read the same —
-    // which is why the assertion below also checks the payload handed to the
-    // driver is still the raw one.
+    // from a transformed value that only exists in the worker.
+    // Keyed on `typeof`, not the value: the schema transforms string -> number,
+    // and `n:${'5'}` and `n:${5}` are the same string — so a value-based key
+    // would pass even if this were handed the transformed payload. This is the
+    // half that proves `uniqueId` sees the RAW input; the payload assertion
+    // below proves the driver does too.
     const job = defineJob({
       name: 't',
       input: z.object({ n: z.string().transform(Number) }),
       unique: true,
-      uniqueId: p => `n:${p.n}`,
+      uniqueId: p => `type:${typeof p.n}`,
       handler: () => {},
     })
     const supervisor = await createSupervisor(baseConfig([job]))
@@ -172,7 +173,7 @@ describe('useQueue deduplication', () => {
 
     await useQueue().enqueue('t', { n: '5' })
 
-    expect(spy.mock.calls[0]![1].dedup!.id).toBe('t:n:5')
+    expect(spy.mock.calls[0]![1].dedup!.id).toBe('t:type:string')
     // Both halves: the transform must not have been applied to what was
     // enqueued either, which is spec 3's transform-once invariant.
     expect(spy.mock.calls[0]![1].payload).toEqual({ n: '5' })
