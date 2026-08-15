@@ -222,6 +222,23 @@ export interface ScheduleSpec {
   /** IANA zone. Always present — resolution defaults it to UTC, never system-local. */
   tz: string
   payload?: unknown
+  /**
+   * `reconcileSchedules` always resolves this against `concierge.defaults`
+   * before it reaches a driver, so a REAL schedule never leaves it
+   * `undefined` — optional here only so a hand-built spec (as every
+   * `planReconciliation` unit test constructs) is not forced to restate it
+   * for logic that never inspects it. Without this resolution, a
+   * scheduler-produced job got BullMQ's (or `memory`'s) bare default of a
+   * single attempt and no backoff, silently discarding the job's own
+   * `attempts`/`backoff` — indistinguishable from every OTHER attempt of
+   * that same job, which does get them, since only the schedule-production
+   * path was missing this wiring. Found by test/lifecycle/cron.test.ts's
+   * "reports the same tick across a retry" scenario, the only coverage
+   * anywhere that fails a scheduler-produced job and checks it actually
+   * retries.
+   */
+  attempts?: number
+  backoff?: BackoffOptions
 }
 
 export interface ScheduleSummary {

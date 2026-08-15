@@ -337,7 +337,27 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
           // producing jobs under its own id would produce jobs no handler
           // matches — which fails on every tick, permanently, exactly like the
           // v1 defect this spec exists to not repeat.
-          { name: spec.jobName, data: encodePayload(spec.payload) },
+          {
+            name: spec.jobName,
+            data: encodePayload(spec.payload),
+            // `attempts`/`backoff`, resolved by reconcileSchedules against
+            // concierge.defaults, so a job that fails on a scheduled tick
+            // retries exactly like it would on a manual enqueue of the same
+            // job — without this, `JobSchedulerTemplateOptions` omitting
+            // nothing here just means BullMQ's own bare default (a single
+            // attempt, no backoff) applies, and every tick's failure is
+            // permanent regardless of what the job itself declares.
+            // `deduplication`/`debounce` are never set here: BullMQ's own
+            // `JobSchedulerTemplateOptions` type omits both, matching the
+            // documented, deliberate fact that a schedule's ticks are never
+            // deduplicated.
+            opts: {
+              attempts: spec.attempts,
+              backoff: spec.backoff,
+              removeOnComplete: { count: 1000 },
+              removeOnFail: { count: 5000 },
+            },
+          },
         )
       },
 

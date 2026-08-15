@@ -5,9 +5,10 @@
 // the named form and gets away with it only because Node resolves BullMQ's CJS
 // build. Verified by direct execution; do not "tidy" this back.
 import cronParser from 'cron-parser'
-import type { AnyJobDefinition, CronSpec } from './types'
+import type { AnyJobDefinition, BackoffOptions, CronSpec } from './types'
 import type { DriverScheduling, ScheduleSpec, ScheduleSummary } from './drivers/types'
 import { formatIssuePath } from './validate'
+import type { JobDefaults } from '../../options'
 
 const { parseExpression } = cronParser
 
@@ -172,10 +173,18 @@ export const validateCronPayloads = async (jobs: AnyJobDefinition[]): Promise<vo
 export interface ReconcileArgs {
   schedule: DriverScheduling
   /** Every scanned job. The full set, never this instance's subset. */
-  jobs: Array<{ name: string, queue: string, cron?: CronSpec }>
+  jobs: Array<{ name: string, queue: string, cron?: CronSpec, attempts?: number, backoff?: BackoffOptions }>
   /** The queues this instance declares. */
   queues: string[]
   enabled: boolean
+  /**
+   * Fallback for a job that declares neither `attempts` nor `backoff` of its
+   * own — the exact same fallback `useQueue().enqueue` applies to a manual
+   * enqueue of that job, so a scheduler-produced tick and a dashboard
+   * "Run now" of the same job share one retry policy, rather than the tick
+   * silently getting none at all.
+   */
+  defaults: JobDefaults
 }
 
 /**
@@ -200,7 +209,7 @@ export interface ReconcileArgs {
  * schedules on the undeclared queues are never reconciled at all.
  */
 export const reconcileSchedules = async (
-  { schedule, jobs, queues, enabled }: ReconcileArgs,
+  { schedule, jobs, queues, enabled, defaults }: ReconcileArgs,
 ): Promise<void> => {
   for (const queue of queues) {
     const declared: ScheduleSpec[] = enabled
@@ -212,6 +221,11 @@ export const reconcileSchedules = async (
             expression: job.cron!.expression,
             tz: job.cron!.tz,
             payload: job.cron!.payload,
+            // Resolved HERE, not left for the driver to default: see the
+            // `attempts` doc comment on ScheduleSpec for why an unresolved
+            // value silently strips a scheduled job's retry policy.
+            attempts: job.attempts ?? defaults.attempts,
+            backoff: job.backoff ?? defaults.backoff,
           }))
       // Disabled runs the sweep with an EMPTY declared set rather than
       // skipping it, so "off" means off in Redis rather than merely off in

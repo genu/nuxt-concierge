@@ -305,6 +305,12 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       void driverSelf.enqueue(current.queue, {
         name: current.spec.jobName,
         payload: current.spec.payload,
+        // Resolved by reconcileSchedules against concierge.defaults — without
+        // forwarding these, a scheduler-produced job fell back to this
+        // driver's own bare "undefined attempts means one attempt" default,
+        // silently discarding the job's own retry policy on every tick.
+        attempts: current.spec.attempts,
+        backoff: current.spec.backoff,
         cron: {
           // The SCHEDULED time, not Date.now(). They differ by timer latency,
           // and only the scheduled time is stable across a retry of this tick.

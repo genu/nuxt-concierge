@@ -8,12 +8,14 @@ Queues, workers and background jobs for Nuxt, built on BullMQ.
 
 - Define jobs with a single `defineJob` handler, auto-scanned from `server/jobs/`
 - Enqueue from anywhere in `server/` with `useQueue`
+- Cron scheduling with `defineJob({ cron })`, reconciled at boot with no cross-instance coordination
+- Enqueue-side deduplication (`unique`) with lock, throttle and debounce modes
 - Workers run as a separate, horizontally-scalable process selected by `CONCIERGE_ROLE`
 - Graceful shutdown that drains in-flight jobs before the process exits
 - An unauthenticated `/_concierge/health` endpoint for orchestrator readiness/liveness checks
 - A `memory` driver for zero-dependency local development, and a `sync` driver for tests
 - Guardrails that fail loudly at boot on common misconfiguration, rather than silently later
-- A dev-only dashboard in Nuxt DevTools for queue counts, workers, job history and retry
+- A dev-only dashboard in Nuxt DevTools for queue counts, workers, schedules, job history and retry
 
 ## Prerequisites
 
@@ -124,6 +126,24 @@ driver — it is **not** a durability knob. The `memory` driver keeps no state a
 process restart regardless of this setting; `historyLimit` only bounds how many
 completed/failed jobs it keeps *in memory* per queue before evicting the oldest, so a
 long-running dev session's job list doesn't grow without bound.
+
+#### `concierge.cron`
+
+```ts
+concierge: {
+  cron: {
+    enabled: true, // master switch for every declared schedule — see "Cron" below
+  },
+}
+```
+
+> **This is a DEPLOYMENT-WIDE switch, not a per-instance one.** `false` does not skip
+> reconciliation — it runs the sweep with an *empty* declared set, so every
+> concierge-owned schedule is removed from Redis. An instance with it `false` will prune
+> the schedules of an instance with it `true`, because neither knows about the other.
+> Setting it inconsistently across a fleet makes schedules flap. Also overridable live via
+> `NUXT_CONCIERGE_CRON_ENABLED=false`, which is exactly why this needs to be set the same
+> way everywhere.
 
 ## Defining jobs
 
@@ -260,6 +280,130 @@ wrapper, so attempt 1 is spent; attempts 2 and 3 are what get skipped.)
 
 > **Handlers must be idempotent.** Delivery is at-least-once and the default is now three attempts, so a handler that charges a card or sends an email can run more than once for the same job. Make the side effect safe to repeat, or guard it with your own idempotency key.
 
+### Cron
+
+```ts
+export default defineJob({
+  cron: '*/5 * * * *',               // string shorthand — every 5 minutes, UTC
+  handler: async (ctx) => { /* ... */ },
+})
+
+export default defineJob({
+  cron: {
+    expression: '0 9 * * *',
+    tz: 'America/New_York',          // the object form for a timezone or a static payload
+    payload: { report: 'daily' },
+  },
+  handler: async (ctx) => {
+    ctx.cron?.tick                   // the SCHEDULED fire time — see below
+  },
+})
+```
+
+**The default timezone is UTC, not system-local**, and that default is deliberate: a laptop
+and a container disagree about local time, and that disagreement is exactly how "the nightly
+job ran at the wrong hour" bugs happen — only ever in production, never in dev. Pass
+`tz` explicitly (any IANA zone) when you actually want local wall-clock time.
+
+**Seconds-granularity expressions work.** `'*/2 * * * * *'` (a 6-field pattern) validates and
+schedules correctly — `resolveCron` validates by handing the expression straight to
+`cron-parser`'s `parseExpression` with no field-count check, so a 6-field pattern passes
+through to BullMQ unmodified. Nobody set out to support this; it falls out of the parser
+having no opinion on field count. Documented here as a supported shape, not an accident to
+avoid relying on.
+
+**`ctx.cron.tick` is the SCHEDULED fire time, not the time the handler started running** —
+they differ by queue latency, and only the scheduled time is stable across a retry of the
+same tick. Use it as your handler's idempotency key: a handler that used `Date.now()`
+instead would get a different value on every attempt, which defeats the entire point of an
+idempotency key.
+
+**Reconciliation runs at boot, per instance, with no coordination between instances.** Every
+worker process that starts upserts every schedule it declares and removes every
+concierge-owned schedule (`concierge:<jobName>` in Redis) that is no longer declared —
+adopting concierge on a queue that already carries unrelated BullMQ repeatable jobs leaves
+those untouched, since only concierge's own namespaced ids are ever candidates for removal.
+No leader election exists because tick-uniqueness is a **driver** guarantee, not the
+supervisor's: `bullmq` keeps exactly one delayed job in flight per scheduler, atomically in
+Lua, and `memory` is single-process. During a rolling deploy that changes or removes a
+`cron` key, old and new code briefly disagree, so **a schedule can miss at most one tick** —
+the prune is idempotent and convergent, and a wrong prune self-heals on the very next boot.
+
+**A missed window produces at most one catch-up run, never a backfill.** If a schedule is
+unable to fire during an outage (Redis down, no worker running) for what would have been
+several ticks, it does not queue one job per missed tick when it recovers — it produces a
+single run for whatever the next occurrence is from the moment reconciliation resumes.
+
+### Deduplication
+
+```ts
+export default defineJob({
+  unique: true,                        // lock — one in-flight job per key at a time
+  handler: async (ctx) => { /* ... */ },
+})
+
+export default defineJob({
+  unique: { ttl: 60_000 },             // throttle — at most one accepted per 60s window
+  handler: async (ctx) => { /* ... */ },
+})
+
+export default defineJob({
+  unique: { ttl: 60_000, debounce: true }, // debounce — coalesces a burst into one run
+  handler: async (ctx) => { /* ... */ },   // after the quiet period
+})
+```
+
+By default the dedup key is `<jobName>:<hash of the serialized envelope>` — a hash of the
+exact devalue string the driver is about to store, not an order-insensitive canonical form.
+**Object key order affects the default key**, and so do Map/Set insertion order, whether two
+equal sub-objects are the same reference or two separately-constructed ones, and whether a
+payload bag was built with `Object.create(null)`. Two call sites building the same logical
+payload with keys in a different order will **not** deduplicate against each other.
+
+This is a deliberate trade, not an oversight: order sensitivity means deduplication is
+occasionally less effective and a job runs twice — which every handler must already
+tolerate under at-least-once delivery. The alternative (an order-insensitive canonical form)
+was attempted and abandoned across several rounds, because it silently *suppressed* jobs
+that should have run — the worse failure by far. If your payload is assembled from more than
+one call site and might vary in key order, use `uniqueId` instead:
+
+```ts
+export default defineJob({
+  unique: { ttl: 60_000 },
+  uniqueId: payload => payload.orderId, // your own, stable key derivation
+  handler: async (ctx) => { /* ... */ },
+})
+```
+
+`uniqueId` must be **pure** — an impure key does not fail loudly, it just silently stops
+deduplicating.
+
+> **This deduplicates enqueues. It never serializes execution.**
+>
+> **A cron job's ticks are not deduplicated at all, even when the job declares `unique`.**
+> BullMQ's `JobSchedulerTemplateOptions` is `Omit<JobsOptions, … 'deduplication' |
+> 'debounce'>`, so a scheduler's template cannot carry deduplication options at the type
+> level; `memory` matches that rather than being more forgiving. `unique` applies in full to
+> anything you `enqueue` yourself, including a manual run from the dashboard — only
+> scheduler-produced ticks are exempt.
+>
+> To reduce overlap, give the job a dedicated queue with concurrency 1. Note the limit:
+> BullMQ's concurrency is per worker *instance*, so two worker processes at concurrency 1
+> give you two concurrent runs.
+
+`enqueue`'s result carries a `deduplicated` flag so a caller can tell a suppressed enqueue
+from a real one:
+
+```ts
+const { id, deduplicated } = await useQueue().enqueue('send-report', payload)
+```
+
+For `bullmq`, reading this flag is a best-effort report, not a guarantee: the check and the
+add are two separate round trips, so two callers racing on the same key can both observe an
+empty key, and the loser reports `deduplicated: false` for an enqueue that was in fact
+suppressed. This is one-directional and only affects the *report* — the deduplication itself
+stays atomic inside BullMQ's Lua, so no job is ever lost or double-run because of this race.
+
 ## Graceful shutdown and delivery guarantees
 
 On `SIGTERM`, concierge stops fetching new jobs, waits up to `worker.shutdownTimeout` for
@@ -329,18 +473,23 @@ printing one was previously wrong whenever port 3000 was taken.
 
 It shows, per queue: live counts by state (waiting/active/completed/failed/delayed), the
 worker processes currently attached (with a staleness flag once a heartbeat falls behind
-`heartbeatTtl`), a job list per state with decoded payloads, and the job registry (every
+`heartbeatTtl`), a job list per state with decoded payloads, the job registry (every
 discovered job, its queue, its schema vendor if any, and its effective attempts/backoff,
-plus the generated job-map `.d.ts`).
+plus the generated job-map `.d.ts`), and a Schedules panel listing every declared cron job
+with its expression, timezone, next fire time and tick count so far.
 
 The job list shows only the first page (25 jobs) per state — the SPA has no pagination
 control yet. The `/_concierge/api/queues/:queue/jobs` endpoint itself already accepts
 `offset`/`limit` query parameters (up to 100 per page); a paging control in the dashboard
 is a follow-up, not something this endpoint is missing.
 
-**Retry is the only write action the dashboard performs.** Everything else is read-only
-introspection. Retry re-queues a single failed job by ID; it does not delete, requeue in
-bulk, or edit a job's payload.
+**Retry and "Run now" are the only write actions the dashboard performs.** Everything else
+is read-only introspection. Retry re-queues a single failed job by ID; it does not delete,
+requeue in bulk, or edit a job's payload. "Run now", on the Schedules panel, enqueues one
+off-schedule run of a cron job through the exact same `useQueue().enqueue` path a real
+production caller would use — including its `unique` policy, so a job with `unique` set can
+report a deduplication notice instead of a fresh id if an identical run is already
+in flight.
 
 Introspection is a capability of the active driver, not a fixed feature:
 
@@ -369,9 +518,11 @@ v2 is a breaking rewrite of the public API and the process model.
   fails at boot.
 - Workers are no longer Nuxt plugins that start automatically. A worker is now a separate
   process running the same build artifact with `CONCIERGE_ROLE=worker`.
-- **Cron is not in this release.** The v1 implementation ran every cron job on the first
-  job's own schedule and wiped the shared cron queue on every boot — it was not carried
-  forward. It returns in a future release as a property of `defineJob`.
+- **Cron is back, as `defineJob({ cron })`, and works differently than v1's did.** v1 ran
+  every cron job on the first job's own schedule and wiped the shared cron queue on every
+  boot. v2 reconciles per-instance at boot with no shared queue and no coordination between
+  instances — see [Cron](#cron) — and adds enqueue-side deduplication (`unique`) alongside
+  it, see [Deduplication](#deduplication).
 - The package no longer ships a CommonJS build. `@nuxt/module-builder` 1.x emits ESM only,
   so `exports`, `main` and `types` in `package.json` point at `module.mjs` and
   `types.d.mts`.

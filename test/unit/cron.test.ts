@@ -206,6 +206,7 @@ describe('reconcileSchedules', () => {
       jobs: [{ name: 'live', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } }],
       queues: ['default'],
       enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     expect(fake.calls.upserts).toEqual([schedulerIdFor('live')])
     expect(fake.calls.removals).toEqual([schedulerIdFor('gone')])
@@ -218,6 +219,7 @@ describe('reconcileSchedules', () => {
       jobs: [{ name: 'live', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } }],
       queues: ['default'],
       enabled: false,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     // Both halves. "No upserts" alone is satisfied by an implementation that
     // skips reconciliation entirely — which is precisely the behaviour this
@@ -237,6 +239,7 @@ describe('reconcileSchedules', () => {
       ],
       queues: ['default'],
       enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     expect(fake.calls.upserts).toEqual([schedulerIdFor('a')])
   })
@@ -248,6 +251,7 @@ describe('reconcileSchedules', () => {
       jobs: [{ name: 'plain', queue: 'default' }],
       queues: ['default'],
       enabled: true,
+      defaults: { attempts: 3, backoff: { type: 'exponential', delay: 1000 } },
     })
     expect(fake.calls.upserts).toEqual([])
   })

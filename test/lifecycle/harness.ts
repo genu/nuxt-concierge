@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import IORedis from 'ioredis'
+import { Queue } from 'bullmq'
 
 export interface AppHandle {
   proc: ChildProcess
@@ -23,6 +24,14 @@ export interface SpawnOptions {
   stalledInterval?: number
   port?: number
   logPath?: string
+  /**
+   * Name of a job that should throw on its first attempt only. Read by
+   * `playground/server/jobs/heartbeat-digest.ts` (the only fixture that
+   * checks it) via `CONCIERGE_FAIL_FIRST_ATTEMPT` — a bespoke, test-only env
+   * var, not a `NUXT_`-prefixed runtime-config override, since it names a
+   * behaviour the module itself has no concept of.
+   */
+  failFirstAttempt?: string
 }
 
 const OUTPUT = 'playground/.output/server/index.mjs'
@@ -84,6 +93,9 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       // on an invalid value) — it stays a bespoke read on purpose.
       CONCIERGE_ROLE: opts.role ?? 'both',
       CONCIERGE_TEST_LOG: logPath,
+      // Undefined when the caller does not ask for it — Node strips env keys
+      // whose value is `undefined` before spawning, same as VITEST below.
+      CONCIERGE_FAIL_FIRST_ATTEMPT: opts.failFirstAttempt,
       // Driver and the two timeouts are NOT bespoke env vars: Nuxt already
       // applies runtime env overrides to `runtimeConfig.concierge.*` using
       // the `NUXT_` prefix (verified against the built output's own
@@ -407,22 +419,29 @@ export interface LogLine { jobId: number, attempt: number, pid: number, id: stri
  * scenario, not a bug. A malformed line ANYWHERE ELSE is a real bug in the
  * job or the harness and must still throw loudly rather than being silently
  * dropped.
+ *
+ * Extracted from `readLog` (rather than duplicated) so the cron scenario's
+ * `readHeartbeatLog` below — a different line shape entirely
+ * (`name`/`tick`/`tz`/`attempt`, not `jobId`/`id`/`pid`) — tolerates that
+ * exact same torn-line case identically, instead of quietly diverging.
  */
-export const readLog = (app: AppHandle): LogLine[] => {
-  const lines = readFileSync(app.logPath, 'utf8').split('\n').filter(Boolean)
+const parseLogFile = (path: string): unknown[] => {
+  const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
 
   return lines
     .map((line, i) => {
       try {
-        return JSON.parse(line) as LogLine
+        return JSON.parse(line) as unknown
       }
       catch (error) {
         if (i === lines.length - 1) return undefined
         throw error
       }
     })
-    .filter((line): line is LogLine => line !== undefined)
+    .filter(line => line !== undefined)
 }
+
+export const readLog = (app: AppHandle): LogLine[] => parseLogFile(app.logPath) as LogLine[]
 
 /**
  * Polls the append-only log rather than sleeping a fixed duration, for a
@@ -463,3 +482,159 @@ export const summarise = (lines: LogLine[]) => {
     pids: new Set(lines.map(l => l.pid)),
   }
 }
+
+// ---------------------------------------------------------------------------
+// Cron scheduler harness (test/lifecycle/cron.test.ts)
+// ---------------------------------------------------------------------------
+
+/** One line `playground/server/jobs/heartbeat-digest.ts` appends per attempt. */
+export interface HeartbeatLogLine { name: string, tick?: number, tz?: string, attempt: number }
+
+export const readHeartbeatLog = (app: AppHandle): HeartbeatLogLine[] =>
+  parseLogFile(app.logPath) as HeartbeatLogLine[]
+
+/** The subset of `ScheduleSummary` these scenarios need to assert on. */
+export interface SchedulerSummary { id: string, jobName: string }
+
+/**
+ * Opens a short-lived BullMQ `Queue` client directly against Redis and closes
+ * it again, rather than going through this app's own HTTP API — the
+ * `/_concierge/api/schedules` route only exists on a DEV server
+ * (`nuxt.options.dev`), and every scenario in cron.test.ts spawns the real
+ * BUILT output via `startApp`/`spawnApp`, which never registers it. This is
+ * the same pair of calls `src/runtime/server/drivers/bullmq.ts`'s own
+ * `schedule.list`/`schedule.upsert` make — reading and writing scheduler
+ * state exactly the way the driver itself does, just from outside the app
+ * process.
+ */
+const withQueue = async <T>(queueName: string, fn: (queue: Queue) => Promise<T>): Promise<T> => {
+  const url = process.env.REDIS_URL
+  if (!url) {
+    throw new Error(
+      '[lifecycle harness] REDIS_URL is required to talk to a BullMQ scheduler directly — '
+      + 'cron.test.ts must stay behind describe.runIf(process.env.REDIS_URL).',
+    )
+  }
+  const queue = new Queue(queueName, { connection: { url } })
+  try {
+    return await fn(queue)
+  }
+  finally {
+    await queue.close()
+  }
+}
+
+export interface StartAppOptions {
+  role?: 'web' | 'worker' | 'both'
+  failFirstAttempt?: string
+}
+
+export interface CronAppHandle extends AppHandle {
+  /** Every concierge-owned scheduler BullMQ currently reports for `queue`. */
+  listSchedulers: (queue: string) => Promise<SchedulerSummary[]>
+  /**
+   * Writes a scheduler directly into Redis, bypassing this app's own
+   * reconciliation entirely — simulating either a stale concierge-owned
+   * scheduler left behind by a job that was since deleted from source, or a
+   * foreign BullMQ repeatable job some other system installed on the same
+   * queue.
+   */
+  injectOrphanScheduler: (queue: string, id: string) => Promise<void>
+  /**
+   * Kills the current process and boots a fresh one with the same start
+   * options, so a caller can observe what boot-time reconciliation does on a
+   * SECOND boot. Deliberately picks a new random port rather than reusing the
+   * old one — the OS does not always release a killed process's port
+   * instantly, and the two-process bullmq-recovery scenario in
+   * shutdown.test.ts made the same call for the same reason.
+   */
+  restart: () => Promise<void>
+  /**
+   * Waits until `jobName`'s log carries `ticks` distinct `ctx.cron.tick`
+   * values, then returns the total number of RUNS logged (not the number of
+   * distinct ticks) — the figure the "bounded runs per tick" assertion needs.
+   */
+  countRunsOverTicks: (jobName: string, ticks: number, timeoutMs?: number) => Promise<number>
+  /**
+   * Waits until `opts.attempts` runs of `jobName` have been logged, in order,
+   * and returns their `ctx.cron.tick` values in the order logged.
+   */
+  collectTicks: (jobName: string, opts: { attempts: number, timeoutMs?: number }) => Promise<number[]>
+}
+
+/**
+ * A richer `spawnApp` for cron scenarios: bullmq-only (the memory driver
+ * cannot run role `worker` at all, and its scheduling is single-process by
+ * construction, so it cannot exercise "two processes, one Redis" in the first
+ * place), and returns a handle carrying scheduler-introspection and
+ * retry-observing methods alongside the base process controls.
+ */
+export const startApp = async (opts: StartAppOptions = {}): Promise<CronAppHandle> => {
+  const logPath = join(tmpdir(), `concierge-cron-${randomUUID()}.log`)
+  writeFileSync(logPath, '')
+
+  // Named distinctly from the top-of-file `spawn` import (node:child_process)
+  // this whole harness otherwise uses, so nothing here shadows it.
+  const launch = () => spawnApp({
+    role: opts.role ?? 'worker',
+    driver: 'bullmq',
+    logPath,
+    failFirstAttempt: opts.failFirstAttempt,
+  })
+
+  let inner = await launch()
+  await waitForReady(inner)
+
+  const handle: CronAppHandle = {
+    get proc() { return inner.proc },
+    get port() { return inner.port },
+    logPath,
+    stop: () => inner.stop(),
+    getStdout: () => inner.getStdout(),
+    getStderr: () => inner.getStderr(),
+
+    listSchedulers: async (queue) => withQueue(queue, async (q) => {
+      const found = await q.getJobSchedulers()
+      return found.map(j => ({ id: j.key, jobName: j.name }))
+    }),
+
+    injectOrphanScheduler: async (queue, id) => withQueue(queue, async (q) => {
+      // Far in the future (once a year) so it is never a candidate to
+      // actually fire during a test's own lifetime — these scenarios only
+      // assert on the schedulers LIST, never on a job this orphan produces.
+      await q.upsertJobScheduler(id, { pattern: '0 0 1 1 *', tz: 'UTC' }, { name: 'orphan-job', data: {} })
+    }),
+
+    restart: async () => {
+      inner.stop()
+      await waitForExit(inner, 20_000)
+      inner = await launch()
+      await waitForReady(inner)
+    },
+
+    countRunsOverTicks: async (jobName, ticks, timeoutMs = 190_000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const lines = readHeartbeatLog(handle).filter(l => l.name === jobName)
+        if (new Set(lines.map(l => l.tick)).size >= ticks) return lines.length
+        await new Promise(r => setTimeout(r, 250))
+      }
+      throw new Error(`did not observe ${ticks} distinct ticks for "${jobName}" within ${timeoutMs}ms`)
+    },
+
+    collectTicks: async (jobName, { attempts, timeoutMs = 90_000 }) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const lines = readHeartbeatLog(handle).filter(l => l.name === jobName)
+        if (lines.length >= attempts) return lines.slice(0, attempts).map(l => l.tick!)
+        await new Promise(r => setTimeout(r, 100))
+      }
+      throw new Error(`did not observe ${attempts} attempt(s) for "${jobName}" within ${timeoutMs}ms`)
+    },
+  }
+
+  return handle
+}
+
+/** Stops the process and removes its log file, matching `cleanup` above. */
+export const stopApp = (app: CronAppHandle): void => cleanup(app)

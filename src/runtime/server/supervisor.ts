@@ -238,6 +238,7 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
               jobs: config.jobs,
               queues: queueNames,
               enabled: config.cron.enabled,
+              defaults: config.defaults,
             })
           }
           catch (error) {
