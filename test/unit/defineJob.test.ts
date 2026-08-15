@@ -120,3 +120,71 @@ describe('defineJob consumer-side validation', () => {
     await expect(job.run(ctx(undefined))).rejects.toThrow('handler blew up')
   })
 })
+
+describe('defineJob cron', () => {
+  it('resolves the string shorthand to a full spec', () => {
+    const job = defineJob({ cron: '0 9 * * *', handler: async () => {} })
+    expect(job.cron).toEqual({ expression: '0 9 * * *', tz: 'UTC' })
+  })
+
+  it('keeps an explicit timezone and static payload', () => {
+    const job = defineJob({
+      cron: { expression: '0 9 * * MON', tz: 'America/Toronto', payload: { scope: 'weekly' } },
+      handler: async () => {},
+    })
+    expect(job.cron).toEqual({
+      expression: '0 9 * * MON', tz: 'America/Toronto', payload: { scope: 'weekly' },
+    })
+  })
+
+  it('throws at definition time on a bad expression', () => {
+    expect(() => defineJob({ cron: 'nope', handler: async () => {} }))
+      .toThrow(/not a valid cron expression/)
+  })
+
+  it('leaves cron undefined for an ordinary job', () => {
+    expect(defineJob({ handler: async () => {} }).cron).toBeUndefined()
+  })
+})
+
+describe('defineJob unique', () => {
+  it('resolves `true` to lock mode', () => {
+    expect(defineJob({ unique: true, handler: async () => {} }).unique).toEqual({})
+  })
+
+  it('keeps a ttl for throttle mode', () => {
+    expect(defineJob({ unique: { ttl: 60_000 }, handler: async () => {} }).unique)
+      .toEqual({ ttl: 60_000 })
+  })
+
+  it('rejects debounce without a ttl', () => {
+    // `extend`/`replace` with no expiry is BullMQ's replace-with-no-expiry
+    // branch — a lock that keeps moving, not a debounce. Rejecting it at
+    // definition time is what makes the combination unrepresentable rather
+    // than quietly reinterpreted.
+    expect(() => defineJob({ unique: { debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+  })
+
+  it('rejects debounce with a zero or negative ttl', () => {
+    // A ttl of 0 is not "a ttl" — it is no expiry window, which lands in the
+    // very branch the case above rejects. Checking only for `undefined` let
+    // this through with no error at all, which is worse than the case that
+    // does throw.
+    expect(() => defineJob({ unique: { ttl: 0, debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+    expect(() => defineJob({ unique: { ttl: -1, debounce: true }, handler: async () => {} }))
+      .toThrow(/debounce requires a ttl/)
+  })
+
+  it('still accepts debounce with a positive ttl', () => {
+    // Paired with the two rejections above: a guard that threw for every
+    // debounce would satisfy both of them and break the feature.
+    expect(defineJob({ unique: { ttl: 5_000, debounce: true }, handler: async () => {} }).unique)
+      .toEqual({ ttl: 5_000, debounce: true })
+  })
+
+  it('leaves unique undefined for an ordinary job', () => {
+    expect(defineJob({ handler: async () => {} }).unique).toBeUndefined()
+  })
+})

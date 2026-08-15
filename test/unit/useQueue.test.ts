@@ -21,6 +21,7 @@ const baseConfig = (jobs: SupervisorConfig['jobs']): SupervisorConfig => ({
   jobs,
   version: 'test',
   isProduction: false,
+  cron: { enabled: true },
 })
 
 afterEach(async () => { await resetSupervisor() })
@@ -112,5 +113,77 @@ describe('useQueue().enqueue', () => {
     await useQueue().enqueue('j', undefined, { delay: 5000 })
 
     expect(spy).toHaveBeenCalledWith('default', expect.objectContaining({ delay: 5000 }))
+  })
+})
+
+describe('useQueue deduplication', () => {
+  it('passes no dedup option for a job that declares none', async () => {
+    const job = defineJob({ name: 'plain', handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
+    await useQueue().enqueue('plain', {})
+
+    expect(spy).toHaveBeenCalledWith('default', expect.objectContaining({ dedup: undefined }))
+  })
+
+  it('resolves lock mode to an id with no ttl', async () => {
+    const job = defineJob({ name: 'u', unique: true, handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
+    await useQueue().enqueue('u', { a: 1 })
+
+    expect(spy.mock.calls[0]![1].dedup).toEqual({ id: expect.any(String) })
+  })
+
+  it("uses the job's uniqueId, namespaced by job name", async () => {
+    const job = defineJob<{ id: number }>({
+      name: 'invoice',
+      unique: true,
+      uniqueId: p => `i:${p.id}`,
+      handler: () => {},
+    })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
+    await useQueue().enqueue('invoice', { id: 7 })
+
+    expect(spy.mock.calls[0]![1].dedup!.id).toBe('invoice:i:7')
+  })
+
+  it('derives the key from the RAW payload, before any transform', async () => {
+    // uniqueId runs on the producer alongside validateOnEnqueue, whose result
+    // is discarded — so the key must come from what the caller passed, not
+    // from a transformed value that only exists in the worker.
+    // Keyed on `typeof`, not the value: the schema transforms string -> number,
+    // and `n:${'5'}` and `n:${5}` are the same string — so a value-based key
+    // would pass even if this were handed the transformed payload. This is the
+    // half that proves `uniqueId` sees the RAW input; the payload assertion
+    // below proves the driver does too.
+    const job = defineJob({
+      name: 't',
+      input: z.object({ n: z.string().transform(Number) }),
+      unique: true,
+      uniqueId: p => `type:${typeof p.n}`,
+      handler: () => {},
+    })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    const spy = vi.spyOn(supervisor.driver, 'enqueue')
+
+    await useQueue().enqueue('t', { n: '5' })
+
+    expect(spy.mock.calls[0]![1].dedup!.id).toBe('t:type:string')
+    // Both halves: the transform must not have been applied to what was
+    // enqueued either, which is spec 3's transform-once invariant.
+    expect(spy.mock.calls[0]![1].payload).toEqual({ n: '5' })
+  })
+
+  it('returns the driver deduplicated flag to the caller', async () => {
+    const job = defineJob({ name: 'u', unique: true, handler: () => {} })
+    const supervisor = await createSupervisor(baseConfig([job]))
+    vi.spyOn(supervisor.driver, 'enqueue').mockResolvedValue({ id: 'existing', deduplicated: true })
+
+    await expect(useQueue().enqueue('u', {})).resolves.toEqual({ id: 'existing', deduplicated: true })
   })
 })

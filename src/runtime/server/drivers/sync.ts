@@ -50,7 +50,11 @@ export const createSyncDriver = (): ConciergeDriver => {
         payload: decodePayload(encodePayload(job.payload)),
       })
 
-      return { id }
+      // `sync` never deduplicates, for the same reason it never retries: it
+      // executes inline so errors reach the enqueue caller, and silently not
+      // running is precisely what this driver exists to prevent. `job.dedup`
+      // is ignored rather than honoured.
+      return { id, deduplicated: false }
     },
 
     consume: () => inertConsumer,

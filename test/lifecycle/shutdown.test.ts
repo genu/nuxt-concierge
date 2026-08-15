@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import {
-  spawnApp, waitForReady, waitForActiveCount, waitForLogCount,
+  spawnApp, waitForReady, waitForActiveCount, waitForCompletedJobs,
   enqueue, readLog, waitForExit, cleanup, summarise, flushRedis,
   killAllSpawned, type AppHandle,
 } from './harness'
@@ -210,7 +210,10 @@ describe.runIf(process.env.REDIS_URL)('bullmq recovery', () => {
       // ever appear and the assertion below would be unsatisfiable rather
       // than a real signal. offset: 0 -> seq 0..4.
       await enqueue(first, 5, 200, 0)
-      await waitForLogCount(first, 5) // let the short batch actually finish under process 1
+      // Distinct jobs, not lines — the assertion at the end of this scenario
+      // is about distinct completions, so the wait has to be too, or an
+      // unrelated line can satisfy it early. See waitForCompletedJobs.
+      await waitForCompletedJobs(first, 5) // let the short batch actually finish under process 1
 
       // A second batch that is still mid-flight when SIGKILL lands, so it
       // gets abandoned, marked stalled, and redelivered to whichever
@@ -238,7 +241,7 @@ describe.runIf(process.env.REDIS_URL)('bullmq recovery', () => {
       // lockDuration, so recovery genuinely takes up to ~30s here; poll
       // instead of guessing a fixed sleep so the test takes as long as
       // recovery actually takes, no longer.
-      await waitForLogCount(second, 10, 60_000)
+      await waitForCompletedJobs(second, 10, 60_000)
 
       const { completed, pids } = summarise(readLog(second))
       expect(completed.size).toBe(10)

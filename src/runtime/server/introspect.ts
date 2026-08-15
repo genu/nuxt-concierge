@@ -1,7 +1,7 @@
 import { consola } from 'consola'
 import { decodePayload } from './envelope'
 import type { Supervisor } from './supervisor'
-import type { DriverCapabilities, DriverIntrospection, JobDetail, JobState, JobSummary, QueueCounts } from './drivers/types'
+import type { DriverCapabilities, DriverIntrospection, DriverScheduling, JobDetail, JobState, JobSummary, QueueCounts, ScheduleSummary } from './drivers/types'
 
 const logger = consola.create({}).withTag('nuxt-concierge')
 
@@ -63,6 +63,13 @@ export interface OverviewResponse {
   capabilities: DriverCapabilities | undefined
   /** Whether the driver implements introspection at all. Presence is the capability. */
   introspectable: boolean
+  /**
+   * Whether the driver can schedule at all. Presence is the capability, and
+   * the panel needs this to EXPLAIN an empty list rather than render one — an
+   * empty list from `sync` means "this driver cannot schedule", not "you have
+   * no cron jobs".
+   */
+  schedulable: boolean
   version: string
   queues: Array<{ name: string, concurrency: number, counts?: QueueCounts }>
   workers: WorkerView[]
@@ -183,6 +190,7 @@ export const buildOverview = async (
       driverHealthy: false,
       capabilities: undefined,
       introspectable: false,
+      schedulable: false,
       version: 'unknown',
       queues: [],
       workers: [],
@@ -224,6 +232,7 @@ export const buildOverview = async (
     driverHealthy: driver.isHealthy(),
     capabilities: driver.capabilities,
     introspectable: Boolean(introspect),
+    schedulable: Boolean(driver.schedule),
     version: config.version,
     queues,
     workers: records.map(r => ({
@@ -239,7 +248,7 @@ export const buildOverview = async (
  * driver did not respond within 1500ms — it may be unreachable" rather than a
  * generic "503 Service Unavailable" with no cause.
  */
-const driverTimeoutMessage = (driverName: string, timeoutMs: number): string =>
+export const driverTimeoutMessage = (driverName: string, timeoutMs: number): string =>
   `the ${driverName} driver did not respond within ${timeoutMs}ms — it may be unreachable`
 
 /**
@@ -285,6 +294,20 @@ export const retryJob = (
   timeoutMs: number = DRIVER_READ_TIMEOUT_MS,
 ): Promise<void> =>
   withTimeoutOrThrow(introspect.retry(queue, id), timeoutMs, driverTimeoutMessage(driverName, timeoutMs))
+
+/**
+ * Bounded for the identical reason as the jobs routes: `schedule.list()` calls
+ * straight into the driver with nothing stopping a dead-Redis connection from
+ * queueing the command forever. Found twice in spec 4 over the same cause, on
+ * the same connection — a new route is a new instance of the same bug.
+ */
+export const readSchedules = (
+  schedule: DriverScheduling,
+  driverName: string,
+  queue: string,
+  timeoutMs: number = DRIVER_READ_TIMEOUT_MS,
+): Promise<ScheduleSummary[]> =>
+  withTimeoutOrThrow(schedule.list(queue), timeoutMs, driverTimeoutMessage(driverName, timeoutMs))
 
 export interface JobDetailResponse extends Omit<JobDetail, 'envelope'> {
   payload: PayloadResult

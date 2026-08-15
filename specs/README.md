@@ -8,7 +8,7 @@ This file is the index and the current state.
 | 1 | **Lifecycle & process model** | **Shipped** as `2.0.0-alpha` | [design](2026-08-12-concierge-v2-lifecycle-design.md) · [plan](plans/2026-08-12-concierge-v2-phase1-lifecycle.md) · [decisions](2026-08-13-phase1-decisions.md) |
 | 3 | **Job API & typed enqueue** | **Shipped** as `2.0.0-alpha.2` | [design](2026-08-13-concierge-v2-job-api-design.md) · [plan](plans/2026-08-13-concierge-v2-spec3-job-api.md) · [decisions](2026-08-13-spec3-decisions.md) |
 | 4 | **Dashboard & driver introspection** | **Implemented** — merged, not yet released | [design](2026-08-13-concierge-v2-dashboard-design.md) · [plan](plans/2026-08-13-concierge-v2-spec4-dashboard.md) · [decisions](2026-08-13-spec4-decisions.md) |
-| 5 | Cron & dedup | Not written — split out of spec 3 | — |
+| 5 | **Cron & dedup** | **Implemented** — merged, not yet released | [design](2026-08-14-concierge-v2-spec5-cron-dedup.md) · [plan](plans/2026-08-14-concierge-v2-spec5-cron-dedup.md) · [decisions](2026-08-14-spec5-decisions.md) |
 | 2 | Driver introspection SPI | **Folded into spec 4**, as recommended below | [design](2026-08-13-concierge-v2-dashboard-design.md) |
 
 ## Why the order changed
@@ -61,6 +61,25 @@ generated-types machinery, which is easy to "simplify" into silent failure — `
 a generated `.d.ts` and a nitro-only alias declaration both fail without an error. Spec 4's
 covers the build-order landmine that ships a tarball with no dashboard, and why the dashboard
 needs no auth of its own.
+
+## Spec 5 outcome
+
+Cron scheduling (`defineJob({ cron })`, reconciled at boot with no cross-instance coordination)
+and enqueue-side deduplication (`unique`, three modes) shipped across 14 tasks. A dev-only
+Schedules panel joins the existing dashboard, and `README.md` now documents both features in
+full, replacing the old "Cron is not in this release" note.
+
+The lifecycle pass (task 14) found a real, previously-shipped defect rather than only adding
+coverage: scheduler-produced jobs carried no retry policy at all in either driver — a cron job
+that failed on a scheduled tick dead-lettered permanently on the very first failure, regardless
+of its own `attempts`/`backoff` or `concierge.defaults`, because `reconcileSchedules` never
+resolved those fields into the `ScheduleSpec` each driver's schedule-production path used. Fixed
+in the same task. See [the spec 5 decisions record](2026-08-14-spec5-decisions.md) for the full
+account, including why no unit test had caught it.
+
+**Read all four decisions records** — [phase 1](2026-08-13-phase1-decisions.md),
+[spec 3](2026-08-13-spec3-decisions.md), [spec 4](2026-08-13-spec4-decisions.md) and
+[spec 5](2026-08-14-spec5-decisions.md) — before starting whatever comes next.
 
 ## Process notes worth carrying forward
 

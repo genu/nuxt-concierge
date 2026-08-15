@@ -97,4 +97,18 @@ describe('resolveModuleOptions', () => {
       expect(resolveModuleOptions({}).memory.historyLimit).toBe(moduleDefaults.memory.historyLimit)
     })
   })
+
+  describe('cron options', () => {
+    it('defaults cron.enabled to true', () => {
+      expect(resolveModuleOptions({}).cron.enabled).toBe(true)
+    })
+
+    it('lets a user disable cron without restating other config', () => {
+      const resolved = resolveModuleOptions({ cron: { enabled: false } })
+      expect(resolved.cron.enabled).toBe(false)
+      // Asserted alongside, because a `cron` key that silently replaced rather
+      // than merged would be the `worker.queues` defect in a new location.
+      expect(resolved.defaults.attempts).toBe(3)
+    })
+  })
 })

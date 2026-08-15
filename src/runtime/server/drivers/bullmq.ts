@@ -1,12 +1,12 @@
 import { Queue, UnrecoverableError, Worker } from 'bullmq'
-import type { Job, JobType } from 'bullmq'
+import type { Job, JobsOptions, JobType } from 'bullmq'
 import { Redis } from 'ioredis'
 import type { RedisOptions } from 'ioredis'
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
 import type { ActiveJob, JobHandler, WorkerRecord } from '../types'
 import type { BullmqOptions } from '../../../options'
-import type { ConciergeDriver, Consumer, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, EnqueueOptions, JobState, JobSummary, ScheduleSummary } from './types'
 import type { CreateDriverOptions } from './index'
 
 /** Matches memory.ts so log output from either driver is tagged the same way. */
@@ -139,6 +139,82 @@ export const jobToSummary = (job: Job, queue: string, state: JobState): JobSumma
   failedReason: job.failedReason ?? undefined,
 })
 
+/**
+ * Projects `EnqueueOptions` onto BullMQ's own job options. Exported and pure so
+ * the mapping is testable without a live Redis.
+ */
+export const bullmqAddOptions = (job: EnqueueOptions): JobsOptions => ({
+  delay: job.delay,
+  // Straight through, no arithmetic: EnqueueOptions.attempts already means
+  // what BullMQ's attempts means.
+  attempts: job.attempts,
+  backoff: job.backoff,
+  // Straight through for the same reason. Note `deduplication`, never the
+  // deprecated `debounce` — they take the identical shape in 5.63.0, which is
+  // exactly what would make building on the wrong one look fine until v6.
+  deduplication: job.dedup,
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+})
+
+/**
+ * Projects BullMQ's `JobSchedulerJson` onto the canonical summary.
+ *
+ * There is deliberately no `last` field: `JobSchedulerJson` in 5.63.0 exposes
+ * `key`, `name`, `id`, `iterationCount`, `limit`, `startDate`, `endDate`, `tz`,
+ * `pattern`, `every`, `next`, `offset` and `template` — and no previous-fire
+ * time. `RepeatOptions.prevMillis` is marked internal and is not returned.
+ */
+export const schedulerToSummary = (
+  json: { key: string, name: string, pattern?: string, tz?: string, next?: number, iterationCount?: number },
+  queue: string,
+): ScheduleSummary => ({
+  id: json.key,
+  jobName: json.name,
+  queue,
+  expression: json.pattern ?? '',
+  // BullMQ omits tz for a schedule created without one; that means UTC, and
+  // saying so beats rendering a blank column that reads as "unknown".
+  tz: json.tz ?? 'UTC',
+  next: json.next,
+  iterationCount: json.iterationCount,
+})
+
+/** The tick millis encoded in a scheduler-produced job id: `repeat:<id>:<millis>`. */
+const tickFromJobId = (id: string | undefined): number | undefined => {
+  const millis = Number(id?.slice(id.lastIndexOf(':') + 1))
+  return id?.startsWith('repeat:') && Number.isFinite(millis) && millis > 0 ? millis : undefined
+}
+
+/**
+ * Recovers a scheduled job's tick metadata, or `undefined` for an ordinary job.
+ *
+ * `repeatJobKey` is the detector: BullMQ sets it on every scheduler-produced
+ * job (`job-scheduler.js:120`) and on nothing else. The tick comes from
+ * `opts.prevMillis` when present, falling back to the millis encoded in the job
+ * id by `getSchedulerNextJobId` (`repeat:<schedulerId>:<nextMillis>`,
+ * `job-scheduler.js:220-222`). Both are read because `prevMillis` is documented
+ * as an internal property, and the id format is a public consequence of a
+ * documented method — neither is load-bearing alone.
+ *
+ * The tick is stable across a retry either way: BullMQ retries the same job
+ * record, so neither the id nor `prevMillis` changes.
+ */
+export const cronContextFromJob = (
+  job: { id?: string, repeatJobKey?: string, opts?: { prevMillis?: number, repeat?: { pattern?: string, tz?: string } } },
+): { tick: number, expression: string, tz: string } | undefined => {
+  if (!job.repeatJobKey) return undefined
+
+  const tick = job.opts?.prevMillis ?? tickFromJobId(job.id)
+  if (tick === undefined) return undefined
+
+  return {
+    tick,
+    expression: job.opts?.repeat?.pattern ?? '',
+    tz: job.opts?.repeat?.tz ?? 'UTC',
+  }
+}
+
 export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDriver => {
   const connection = buildConnection(opts.connection)
   const bull = resolveBullmqOptions(opts.bullmq)
@@ -240,6 +316,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
           envelope: job.data,
           stack: job.stacktrace?.join('\n') || undefined,
           raw: { bullState, opts: job.opts as Record<string, unknown> },
+          deduplicationId: job.deduplicationId ?? undefined,
         }
       },
 
@@ -248,6 +325,48 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
         if (!job) throw new Error(`[nuxt-concierge] no job "${id}" on queue "${queue}" to retry.`)
         await job.retry()
       },
+    },
+
+    schedule: {
+      upsert: async (queue, spec) => {
+        await queueOf(queue).upsertJobScheduler(
+          spec.id,
+          { pattern: spec.expression, tz: spec.tz },
+          // The job NAME must be the concierge job name, not the scheduler id:
+          // `registerHandler` keys handlers by queue+name, so a scheduler
+          // producing jobs under its own id would produce jobs no handler
+          // matches — which fails on every tick, permanently, exactly like the
+          // v1 defect this spec exists to not repeat.
+          {
+            name: spec.jobName,
+            data: encodePayload(spec.payload),
+            // `attempts`/`backoff`, resolved by reconcileSchedules against
+            // concierge.defaults, so a job that fails on a scheduled tick
+            // retries exactly like it would on a manual enqueue of the same
+            // job — without this, `JobSchedulerTemplateOptions` omitting
+            // nothing here just means BullMQ's own bare default (a single
+            // attempt, no backoff) applies, and every tick's failure is
+            // permanent regardless of what the job itself declares.
+            // `deduplication`/`debounce` are never set here: BullMQ's own
+            // `JobSchedulerTemplateOptions` type omits both, matching the
+            // documented, deliberate fact that a schedule's ticks are never
+            // deduplicated.
+            opts: {
+              attempts: spec.attempts,
+              backoff: spec.backoff,
+              removeOnComplete: { count: 1000 },
+              removeOnFail: { count: 5000 },
+            },
+          },
+        )
+      },
+
+      list: async (queue) => {
+        const found = await queueOf(queue).getJobSchedulers()
+        return found.map(j => schedulerToSummary(j, queue))
+      },
+
+      remove: async (queue, id) => { await queueOf(queue).removeJobScheduler(id) },
     },
 
     init: async () => { client() },
@@ -283,19 +402,29 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
     registerHandler: (queue, name, handler) => { handlers.set(key(queue, name), handler) },
 
     enqueue: async (queue, job) => {
-      const added = await queueOf(queue).add(job.name, encodePayload(job.payload), {
-        delay: job.delay,
-        // Straight through, no arithmetic: EnqueueOptions.attempts already
-        // means what BullMQ's attempts means. Before this, nothing passed
-        // attempts at all, BullMQ defaulted to 0, and `attemptsMade + 1 < 0`
-        // is never true — so a failing job was never retried in production
-        // while the memory driver retried it three times.
-        attempts: job.attempts,
-        backoff: job.backoff,
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { count: 5000 },
-      })
-      return { id: String(added.id) }
+      const q = queueOf(queue)
+
+      // Read the current holder of the dedup key BEFORE adding. BullMQ's
+      // `add()` returns the EXISTING job when an enqueue is suppressed and
+      // offers no flag of its own — nothing on the returned job distinguishes
+      // "you created this" from "this already existed", because the id is the
+      // returned job's id either way. Comparing against the holder captured
+      // beforehand is the only check available.
+      //
+      // `getDeduplicationJobId` is BullMQ's own public accessor for exactly
+      // this key (`QueueGetters`, which `Queue` extends); it does the same GET
+      // this driver would otherwise hand-roll, without depending on the
+      // internal key layout.
+      const before = job.dedup
+        ? await q.getDeduplicationJobId(job.dedup.id)
+        : null
+
+      const added = await q.add(job.name, encodePayload(job.payload), bullmqAddOptions(job))
+      const id = String(added.id)
+
+      // The key was already held by the very job we were handed back: this
+      // call added nothing.
+      return { id, deduplicated: before !== null && before === id }
     },
 
     consume: (queue, consumeOpts, onJob): Consumer => {
@@ -322,6 +451,7 @@ export const createBullmqDriver = (opts: CreateDriverOptions = {}): ConciergeDri
               queue,
               attempt: job.attemptsMade + 1,
               payload: decodePayload(job.data),
+              cron: cronContextFromJob(job),
             })
           }
           catch (error) {

@@ -1,8 +1,15 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
-import type { BackoffOptions, JobContext, JobDefinition, JobHandler } from '../types'
+import type { BackoffOptions, JobContext, JobDefinition, JobHandler, UniqueOptions } from '../types'
+import type { CronInput } from '../cron'
+import { resolveCron } from '../cron'
 import { validateOnConsume } from '../validate'
 
-export interface DefineJobOptions<Out> {
+/**
+ * `In` defaults to `Out` so the no-schema case (where they are the same type)
+ * needs no second argument. The two are only distinct when an `input` schema
+ * transforms — and `uniqueId` needs `In`, not `Out`.
+ */
+export interface DefineJobOptions<Out, In = Out> {
   /** Defaults to the filename, resolved at build time. */
   name?: string
   /** Must exist in concierge.worker.queues or the build fails. */
@@ -11,6 +18,21 @@ export interface DefineJobOptions<Out> {
   attempts?: number
   backoff?: BackoffOptions
   handler: JobHandler<Out>
+  /** A schedule. String shorthand, or the object form for a timezone or payload. */
+  cron?: CronInput
+  /** `true` is lock mode. `{ ttl }` throttles. `{ ttl, debounce: true }` debounces. */
+  unique?: boolean | UniqueOptions
+  /**
+   * Producer-side key derivation. MUST be pure — an impure key does not fail
+   * loudly, it just stops deduplicating.
+   *
+   * Receives `In`, the ENQUEUE-side payload, NOT `Out`. This runs alongside
+   * `validateOnEnqueue`, whose result is deliberately discarded so a
+   * transforming schema applies exactly once — in the worker. The transformed
+   * value therefore does not exist at the call site, and typing this against
+   * `Out` would promise a shape the function is never handed.
+   */
+  uniqueId?: (payload: In) => string
 }
 
 /**
@@ -18,7 +40,7 @@ export interface DefineJobOptions<Out> {
  * so it wins whenever `input` is present.
  */
 export function defineJob<S extends StandardSchemaV1>(
-  opts: DefineJobOptions<StandardSchemaV1.InferOutput<S>> & { input: S },
+  opts: DefineJobOptions<StandardSchemaV1.InferOutput<S>, StandardSchemaV1.InferInput<S>> & { input: S },
 ): JobDefinition<StandardSchemaV1.InferInput<S>, StandardSchemaV1.InferOutput<S>>
 
 /**
@@ -42,11 +64,32 @@ export function defineJob(
     // `never` accepts any JobHandler<X> by contravariance, which is what lets
     // one implementation signature satisfy both overloads above.
     handler: JobHandler<never>
+    cron?: CronInput
+    unique?: boolean | UniqueOptions
+    uniqueId?: (payload: never) => string
   },
 ): JobDefinition<unknown, unknown> {
   if (typeof opts?.handler !== 'function') {
     throw new Error('[nuxt-concierge] defineJob requires a handler function')
   }
+
+  // A POSITIVE ttl, not merely a defined one. `{ ttl: 0, debounce: true }` used
+  // to pass this check and then resolve to `{ extend: true, replace: true }`
+  // with no expiry — which is the moving lock this error exists to reject,
+  // arriving with no error at all. Same for a negative value.
+  if (opts.unique && typeof opts.unique === 'object' && opts.unique.debounce
+    && !(typeof opts.unique.ttl === 'number' && opts.unique.ttl > 0)) {
+    throw new Error(
+      '[nuxt-concierge] unique.debounce requires a ttl. Without an expiry, `extend` and '
+      + '`replace` produce a lock that keeps moving rather than a debounce window.',
+    )
+  }
+
+  const unique = opts.unique === true
+    ? {}
+    : opts.unique === false || opts.unique === undefined
+      ? undefined
+      : opts.unique
 
   const handler = opts.handler as JobHandler<unknown>
 
@@ -71,5 +114,14 @@ export function defineJob(
 
       await handler({ ...ctx, payload })
     },
+    // Resolved HERE rather than at boot so a typo'd expression throws where
+    // the job is written, with that file already on the stack.
+    cron: opts.cron === undefined ? undefined : resolveCron(opts.cron),
+    unique,
+    // `uniqueId` is cast because `DefineJobOptions<Out>` types it against the
+    // concrete payload while `JobDefinition` holds it contravariantly for the
+    // collection type. This is the same accommodation `handler`/`run` already
+    // makes, and for the same reason.
+    uniqueId: opts.uniqueId as JobDefinition['uniqueId'],
   }
 }

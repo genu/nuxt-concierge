@@ -4,17 +4,27 @@ import { consola } from 'consola'
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import { createDriver, resolveDriverName } from './drivers'
 import type { ConciergeDriver, Consumer } from './drivers'
-import type { AnyJobDefinition, BackoffOptions, Role, SupervisorState, WorkerRecord } from './types'
+import type {
+  AnyJobDefinition,
+  BackoffOptions,
+  Role,
+  SupervisorState,
+  UniqueOptions,
+  WorkerRecord,
+} from './types'
 import { startNoWorkerWatch } from './guardrails'
+import { reconcileSchedules, validateCronPayloads } from './cron'
 import type {
   BullmqOptions,
   ConnectionOptions,
+  CronOptions,
   DriverName,
   JobDefaults,
   WorkerOptions,
 } from '../../options'
 
-const logger = consola.create({}).withTag('nuxt-concierge')
+/** Exported so tests can spy on it instead of asserting on console output. */
+export const logger = consola.create({}).withTag('nuxt-concierge')
 
 /**
  * What the producer needs to know about a job in order to enqueue it.
@@ -29,6 +39,8 @@ export interface RegistryEntry {
   input?: StandardSchemaV1
   attempts?: number
   backoff?: BackoffOptions
+  unique?: UniqueOptions
+  uniqueId?: (payload: never) => string
 }
 
 export interface SupervisorConfig {
@@ -40,6 +52,7 @@ export interface SupervisorConfig {
   defaults: JobDefaults
   jobs: AnyJobDefinition[]
   version: string
+  cron: CronOptions
   /**
    * Resolved at build time by the host module, not read from process.env at
    * runtime here: Nitro's production bundling statically inlines
@@ -120,6 +133,11 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
     }
   }
 
+  // Boot-time, because validation must EXECUTE the schema and build time
+  // cannot. A schema-violating cron payload otherwise dead-letters on every
+  // tick forever, since payload failures are permanent by design.
+  await validateCronPayloads(config.jobs)
+
   // A second createSupervisor() call (successive tests, or a dev-mode nitro
   // reload) must not leak the previous supervisor's timer, consumers and
   // driver. Stopping the live one first rather than refusing keeps both
@@ -150,6 +168,8 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
       input: job.input,
       attempts: job.attempts,
       backoff: job.backoff,
+      unique: job.unique,
+      uniqueId: job.uniqueId,
     }]),
   )
   const consumers = new Map<string, Consumer>()
@@ -209,6 +229,31 @@ export const createSupervisor = async (config: SupervisorConfig): Promise<Superv
       if (config.role !== 'web') {
         for (const [queue, concurrency] of Object.entries(config.worker.queues)) {
           consumers.set(queue, driver.consume(queue, { concurrency }))
+        }
+
+        if (driver.schedule) {
+          try {
+            await reconcileSchedules({
+              schedule: driver.schedule,
+              jobs: config.jobs,
+              queues: queueNames,
+              enabled: config.cron.enabled,
+              defaults: config.defaults,
+            })
+          }
+          catch (error) {
+            // Logged, not fatal. A worker that cannot reach Redis to reconcile
+            // must still come up and process whatever it can — the alternative
+            // is a deploy that refuses to start because of a transient blip,
+            // and reconciliation is convergent: the next boot fixes it.
+            logger.warn('[nuxt-concierge] schedule reconciliation failed', error)
+          }
+        }
+        else if (config.jobs.some(job => job.cron)) {
+          logger.warn(
+            `[nuxt-concierge] the "${driver.name}" driver cannot schedule, so `
+            + `${config.jobs.filter(job => job.cron).length} cron job(s) will never fire.`,
+          )
         }
 
         heartbeatTimer = setInterval(() => {

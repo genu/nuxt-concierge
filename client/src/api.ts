@@ -34,6 +34,16 @@ export interface JobDetailView extends JobSummaryView {
   raw?: Record<string, unknown>
 }
 
+export interface ScheduleView {
+  id: string
+  jobName: string
+  queue: string
+  expression: string
+  tz: string
+  next?: number
+  iterationCount?: number
+}
+
 export interface RegistryView {
   jobs: Array<{
     name: string
@@ -69,4 +79,22 @@ export const api = {
     throw new Error(body.error ?? `retry failed with ${res.status}`)
   },
   registry: () => json<RegistryView>('/_concierge/api/registry'),
+  // The list degrades per queue rather than failing whole: `unreadableQueues`
+  // names the queues whose driver read timed out, so the panel can tell "no
+  // schedules declared" apart from "some queues could not be read" instead
+  // of quietly rendering a short list as if it were complete.
+  schedules: () => json<{ items: ScheduleView[], unreadableQueues: string[] }>('/_concierge/api/schedules'),
+  runSchedule: async (name: string) => {
+    const res = await fetch(
+      `/_concierge/api/schedules/${encodeURIComponent(name)}/run`,
+      { method: 'POST' },
+    )
+    if (res.ok) return res.json() as Promise<{ id: string, deduplicated: boolean }>
+    // Matches `retry`'s precedent: the server's 404/409/503 all name their
+    // own cause (no such scheduled job, the driver's own enqueue error, no
+    // supervisor), and falling back to a generic status text would throw
+    // that reason away.
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(body.error ?? `run failed with ${res.status}`)
+  },
 }

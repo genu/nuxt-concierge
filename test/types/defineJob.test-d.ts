@@ -112,3 +112,48 @@ describe('defineJob with neither', () => {
     expectTypeOf<EnqueueInputOf<typeof job>>().toEqualTypeOf<unknown>()
   })
 })
+
+// `uniqueId` receives the schema INPUT, not its output. Here the schema
+// transforms string -> number, so `Out` is `{ n: number }` and `In` is
+// `{ n: string }`; typing against `Out` would promise the handler's shape to a
+// function that runs before the transform ever applies.
+defineJob({
+  input: z.object({ n: z.string().transform(Number) }),
+  uniqueId: (payload) => {
+    expectTypeOf(payload).toEqualTypeOf<{ n: string }>()
+    return payload.n
+  },
+  handler: async (ctx) => {
+    // Paired with the above deliberately: the handler DOES see the output.
+    // Asserting only the uniqueId side would pass for an implementation that
+    // typed both as the input.
+    expectTypeOf(ctx.payload).toEqualTypeOf<{ n: number }>()
+  },
+})
+
+// The no-schema case: In defaults to Out, so both are the type argument.
+defineJob<{ id: number }>({
+  uniqueId: (payload) => {
+    expectTypeOf(payload).toEqualTypeOf<{ id: number }>()
+    return String(payload.id)
+  },
+  handler: async () => {},
+})
+
+// `ctx.cron` is optional and correctly shaped on every job, scheduled or not —
+// a handler cannot know at compile time whether a given run came from a tick.
+defineJob({
+  cron: '0 9 * * *',
+  handler: async (ctx) => {
+    expectTypeOf(ctx.cron).toEqualTypeOf<{ tick: number, expression: string, tz: string } | undefined>()
+  },
+})
+
+// @ts-expect-error — a cron job may not declare an unknown option, which is
+// what keeps a typo'd `crons:` from silently defining a job that never fires.
+defineJob({ crons: '0 9 * * *', handler: async () => {} })
+
+// The positive twin of the negative above. `@ts-expect-error` passes if ANY
+// error occurs on the line, including an unrelated typo, so it proves nothing
+// without this.
+defineJob({ cron: '0 9 * * *', handler: async () => {} })

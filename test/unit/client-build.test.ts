@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import fg from 'fast-glob'
 
@@ -58,5 +58,22 @@ describe('the built dashboard client', () => {
     // consumer's node_modules.
     const CLIENT_SIZE_BUDGET_BYTES = 820_000
     expect(total).toBeLessThan(CLIENT_SIZE_BUDGET_BYTES)
+  })
+
+  it('bundles the Schedules panel', () => {
+    // The build-order landmine from spec 4 produces no error of its own — the
+    // only symptom is a missing directory in a tarball nobody inspects. This
+    // asserts the new panel actually reached the bundle.
+    // Asserted before reading it: `readdirSync` on a missing directory throws
+    // ENOENT, which fails as an unhandled fs error rather than as "the client
+    // did not build" — and a missing `dist/client/assets` is precisely the
+    // symptom the build-order landmine produces.
+    expect(existsSync(resolve(DIST, 'assets'))).toBe(true)
+
+    const assets = readdirSync(resolve(DIST, 'assets'))
+    const js = assets.filter(f => f.endsWith('.js'))
+      .map(f => readFileSync(resolve(DIST, 'assets', f), 'utf8'))
+      .join('')
+    expect(js).toContain('Schedules')
   })
 })

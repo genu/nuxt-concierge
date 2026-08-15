@@ -1,0 +1,333 @@
+# Spec 5 decisions record
+
+Distilled from the spec 5 execution ledger (14 tasks, each with an independent review and fix
+loop). The design spec says what was intended; this says what was decided along the way, what
+was deliberately left undone, and which facts were expensive to learn.
+
+Read this, alongside the [phase 1](2026-08-13-phase1-decisions.md), [spec 3](2026-08-13-spec3-decisions.md)
+and [spec 4](2026-08-13-spec4-decisions.md) records, before starting anything that touches cron
+or deduplication again.
+
+## Constraints that will break the build or silently break behaviour
+
+- **`import { parseExpression } from 'cron-parser'` throws at runtime.** `cron-parser` 4.9.0 is
+  CommonJS with no `exports` map, and this package is `type: module` — the named-import form
+  throws `SyntaxError: Named export 'parseExpression' not found` the first time `resolveCron` or
+  `nextFireTime` actually runs, and no typecheck catches it, because the `.d.ts` shape is
+  identical either way. BullMQ's own ESM source uses the named form and gets away with it only
+  because Node resolves BullMQ's CJS build, not this package's. `src/runtime/server/cron.ts` uses
+  the default-import form (`import cronParser from 'cron-parser'; const { parseExpression } =
+  cronParser`) — do not "tidy" it back to a named import.
+
+- **`concierge.cron.enabled` is deployment-wide, not per-instance.** `false` does not skip
+  reconciliation — it runs the sweep with an *empty* declared set, so every concierge-owned
+  schedule is removed from Redis on that instance's next boot. An instance with it `false` will
+  therefore prune the schedules of an instance with it `true`, because neither instance
+  coordinates with the other; each just reconciles its own view of "what should exist" against
+  Redis. Setting this inconsistently across a fleet — a canary with the old value alongside a
+  majority with the new one, say — makes schedules flap in and out of existence until the
+  rollout finishes. There is no way to make this safe without adding real coordination, which
+  this spec deliberately does not do (see tick-uniqueness below); document it loudly instead,
+  which `src/options.ts` and `README.md` both now do.
+
+- **A cron job's ticks are never deduplicated, even when the job declares `unique`, and this is
+  a type-level fact, not a missing feature.** BullMQ's `JobSchedulerTemplateOptions` is `Omit<
+  JobsOptions, 'jobId' | 'repeat' | 'delay' | 'deduplication' | 'debounce'>` — a scheduler's job
+  template cannot carry deduplication options at all, in either driver, because `memory` mirrors
+  this exemption rather than being more forgiving. `unique` still applies in full to anything
+  enqueued through `useQueue().enqueue`, including a dashboard "Run now" of that same job — only
+  ticks the scheduler itself produces are exempt. An earlier draft of the plan that fed this task
+  claimed cron plus `unique` gives "no more than one queued job at a time"; that line was wrong
+  and was corrected before it reached the shipped README.
+
+- **Seconds-granularity cron expressions work, and this is worth documenting as supported rather
+  than leaving as an accident.** `resolveCron` validates by handing the expression straight to
+  `cron-parser`'s `parseExpression` with no field-count check of its own, so a 6-field pattern
+  (`*/2 * * * * *`) passes through to BullMQ unmodified — verified by direct execution, not
+  inferred from either library's docs. Nobody set out to support this; it falls out of the parser
+  having no opinion on field count. README now says so explicitly instead of leaving it for
+  someone to discover by accident and wonder whether it is safe to rely on.
+
+- **Scheduler-produced jobs silently got no retry policy at all, in both drivers, until this
+  task.** This is the single most consequential finding of spec 5's lifecycle pass, and it shipped
+  in tasks 3/7/8 without being noticed by any unit test. `reconcileSchedules` (`cron.ts`) built
+  each `ScheduleSpec` from only `{ id, jobName, expression, tz, payload }`; neither
+  `bullmq.ts`'s `schedule.upsert` (which called `upsertJobScheduler` with a job template of just
+  `{ name, data }`, no `opts`) nor `memory.ts`'s `arm()` (which called `driverSelf.enqueue(...)`
+  with no `attempts`/`backoff` fields) ever forwarded a job's configured — or defaulted —
+  `attempts`/`backoff` into a tick it produced. The practical effect: a cron job that failed on a
+  scheduled tick got BullMQ's (or `memory`'s) bare built-in default of a single attempt and no
+  backoff, regardless of what `attempts`/`backoff` the job declared or what `concierge.defaults`
+  said, and dead-lettered permanently on the very first failure of *every single tick*, forever —
+  while a manual `enqueue()` of the identical job, including a dashboard "Run now", retried
+  correctly, because that path resolves `attempts`/`backoff` in `useQueue.ts`. No existing unit
+  test caught this because every existing retry/attempts test — the retry conformance table
+  included — calls `driver.enqueue(...)` directly with explicit `attempts`, never through a
+  scheduler tick. `test/lifecycle/cron.test.ts`'s "reports the same tick across a retry of that
+  tick" scenario is the first (and, at the time of writing, only) coverage anywhere that fails a
+  *scheduler-produced* job and checks it actually retries — it failed with `did not observe 2
+  attempt(s) ... within 90000ms` against the as-shipped code, which is how this was found.
+  Fixed by resolving `attempts`/`backoff` against `concierge.defaults` inside `reconcileSchedules`
+  itself (a new `defaults: JobDefaults` argument) and threading the resolved values through
+  `ScheduleSpec.attempts`/`ScheduleSpec.backoff` into both drivers' schedule-production paths.
+  `ScheduleSpec.attempts`/`backoff` stayed *optional* on the type, deliberately, so the several
+  `planReconciliation` unit tests that hand-build minimal specs (which that pure set-arithmetic
+  function never inspects those fields for) did not all need updating — only `reconcileSchedules`
+  itself, which is the one place required to always fill them in for a schedule that will
+  actually reach a driver.
+
+## Corrections to earlier claims
+
+- **`Queue.getDeduplicationJobId` does exist in bullmq 5.63.0** — declared on `QueueGetters`,
+  which `Queue` extends. An earlier round of spec 5 asserted it did not, having grepped
+  `classes/queue.d.ts` alone rather than its base class, and shipped a hand-rolled key read before
+  review caught it (`7f2caf3`, `d67193a`). Recorded again here because it is the one place in this
+  spec where "verified against the installed source" meant grep rather than execution, and it was
+  the one claim that turned out wrong. Every other "verified" claim in this spec and its
+  predecessor's decisions records was checked by actually running the code.
+
+- **The default dedup key is a hash of the serialized envelope, not an order-insensitive canonical
+  form** — and this was a deliberate reversal partway through the spec, not the original design.
+  An order-insensitive canonical form was specified and attempted across three implementation
+  rounds; each round fixed the cited examples while leaving the mechanism itself open, because a
+  hand-written canonical form dispatches on `instanceof`/prototype identity while `devalue`
+  dispatches on `Object.prototype.toString`'s brand and on shape, and any value sitting in the gap
+  between those two dispatchers got `devalue`'s raw insertion-ordered walk regardless of which
+  canonicalization was attempted. Escapees found in review before the reversal: a `URL` subclass
+  carrying its own extra property (two different hrefs, one dedup key — a silently *suppressed*
+  job), data inherited one link up a null-prototype chain, and cross-realm `Map`/`Set`. Hashing the
+  exact stored envelope has exactly one dispatcher, so that class of gap cannot exist by
+  construction — at the accepted cost that object key order, Map/Set insertion order, reference
+  identity of equal sub-objects, and `Object.create(null)` vs `{}` now all affect the key. That
+  trade is documented in `dedup.ts`, in the README's Deduplication section, and repeated here
+  because it is the single most consequential design reversal in this spec: order sensitivity
+  means an occasional extra run, which every handler must already tolerate under at-least-once
+  delivery, whereas the alternative meant a job that should have run did not, silently.
+  `uniqueId` is the escape hatch for a payload assembled from more than one call site.
+
+## Known gaps carried forward, with their status
+
+- **The `memory` driver's debounce `replace` only supersedes a job still in `pending`** (waiting
+  or delayed) — a job already claimed by the run loop (`active`) is not replaced, matching
+  BullMQ's own `removeDelayedJob` returning `false` for a job no longer in a removable list.
+  Confirmed **by reading `memory.ts`'s dedup branch in `enqueue()`** (the `idx = q.findIndex(...)`
+  guard: a job the poll loop has already spliced out of the pending array cannot match, and the
+  fall-through comment says so), matching the same claim already made in `memory.ts`'s own
+  comments. **Not independently exercised by an automated test** — every existing debounce test
+  (`cron-dedup-conformance.test.ts`, `memory-dedup.test.ts`) covers the *pending* case (the one
+  that discriminates `replace` from throttle) but none deliberately let the target job go active
+  first and then re-enqueue against it. Recorded here rather than silently, as the brief asked:
+  confirmed true by code reading, not by a dedicated test. Worth a follow-up unit test, but out of
+  this task's scope to add.
+
+- **BullMQ's `deduplicated` flag is best-effort under concurrency, by construction, and stays
+  that way.** The read and the add are two separate round trips in `bullmq`'s own
+  `getDeduplicationJobId`/`add` pair, so two callers racing on the same key can both observe an
+  empty key, and the loser reports `deduplicated: false` for an enqueue that was in fact
+  suppressed. One-directional only: a fresh enqueue can never be *mis*-reported as deduplicated,
+  because BullMQ's job ids are monotonic per queue. The deduplication itself stays atomic in
+  BullMQ's Lua regardless — this only affects the caller-facing *report*. Documented on
+  `EnqueueResult.deduplicated`; the conformance table asserts the resulting job **count**, never
+  this flag, for the case that would otherwise be racy to assert on.
+
+## Test-suite conventions this spec added or leaned on
+
+- **A lifecycle scenario counts only once it has been watched failing against the behaviour it
+  guards.** Verified for `test/lifecycle/cron.test.ts`'s "prunes a schedule that is no longer
+  declared" case: `reconcileSchedules`'s removal loop was commented out, the single scenario was
+  re-run in isolation (`vitest run ... -t "prunes a schedule"`), and it failed with `expected [
+  'concierge:deleted-job', ... ] to not include 'concierge:deleted-job'` — then the removal loop
+  was restored and the full file re-run green. This is the same phase-1 convention repeated: a
+  scenario nobody has watched fail is not evidence, it is an assumption wearing a test's clothes.
+
+- **Real cron granularity makes `test/lifecycle/cron.test.ts` slow, and that is inherent, not a
+  bug in the harness.** The playground fixture (`heartbeat-digest`) is intentionally `* * * * *`
+  — every minute — "so a dev session or a lifecycle run actually sees it fire" (its own comment).
+  The two-worker "bounded runs per tick" scenario genuinely waits on up to two real minute
+  boundaries (worst case a little over two wall-clock minutes), and the retry-tick scenario waits
+  on up to one. The whole file's observed run time is 174-245 seconds depending on where in the
+  minute it happens to start. This is real time passing, not a fixed sleep the harness convention
+  otherwise forbids — there is no faster way to prove a real BullMQ Job Scheduler fires a real
+  tick on a real cron pattern. Each scenario's own `it(..., timeoutMs)` is set generously above the
+  worst case for exactly this reason (up to 220s for the two-tick case).
+
+- **`REDIS_URL` is required for the cron and dedup conformance table, and its bullmq half silently
+  degrades to skipped without it** — carried forward from spec 3/4's identical convention for the
+  retry conformance table, and true again here for the exact same shared-driver-loop reason.
+  `pnpm test` and `pnpm test:lifecycle` must both run with `REDIS_URL` set for this to mean
+  anything; CI already does.
+
+- **Readiness is a health-endpoint poll, and duplicates are counted and bounded, never asserted
+  zero** — both existing phase-1 conventions, both reused as-is by `cron.test.ts`'s own new
+  helpers (`waitForReady` unchanged; `countRunsOverTicks` bounds `[2, 3]` rather than asserting
+  exactly `2`, for the same at-least-once reason every other duplicate-count assertion in this
+  project does).
+
+## Facts that cost real time, found in review after this spec shipped
+
+- **A test double that discards the payload it is handed cannot catch a bug in what gets put
+  there.** `reconcileSchedules`'s fix (retry policy resolved onto each `ScheduleSpec`) shipped with
+  zero unit coverage of its own job-level override branch: `test/unit/cron.test.ts`'s
+  `fakeScheduler.upsert` recorded only `spec.id`, so every existing `reconcileSchedules` test could
+  observe *which* schedule was upserted but nothing about what it carried. The defaults-fallback
+  half was accidentally exercised (nothing in the fixtures declared its own `attempts`/`backoff`,
+  so the `?? defaults.attempts` branch always ran), but a job declaring its *own* retry policy had
+  no coverage anywhere — a cheap unit test would have caught the original bug in milliseconds, and
+  none existed because the fake threw the evidence away before an assertion could see it. Fixed by
+  recording the full spec in a parallel `calls.specs` array and adding two tests — one per branch of
+  `job.attempts ?? defaults.attempts` — each confirmed to fail when reverted.
+- **The `memory` driver's half of the same fix had zero coverage anywhere**, lifecycle or unit,
+  before this review: `test/lifecycle/cron.test.ts` is bullmq-only by its own comment, and nothing
+  exercised `memory`'s `arm()` carrying `attempts`/`backoff` into the enqueue it produces. It was
+  correct by code reading only. Added a unit test to `memory-schedule.test.ts` asserting `attempts`
+  on the produced job via `introspect.list('waiting', ...)`; confirmed it fails if `attempts` is
+  dropped from the timer-fired enqueue. `backoff` is not observable through `introspect` —
+  `JobSummary` carries `attempts`/`attemptsMade` only — so this test cannot assert on it and does
+  not pretend to.
+- **The two-worker "bounded runs per tick" scenario could time out for a reason that had nothing to
+  do with a bug.** `startApp` gave each of the two worker processes its own log file, but BullMQ
+  never routes a scheduler's tick back to the producing process — either worker can legitimately
+  execute any given tick. Reading only the first process's log for `countRunsOverTicks` could
+  therefore miss ticks the second process executed and time out on entirely correct behaviour. Same
+  root cause, same fix shape as `shutdown.test.ts`'s SIGKILL-recovery scenario ("same log so the
+  second process appends to the first's records") — `startApp` now accepts a `logPath` option and
+  the second worker is started with the first's.
+
+## Other facts that cost real time
+
+- **The chrome-devtools MCP server in this environment could not complete a browser connection**
+  (`Target.setDiscoverTargets timed out`), reproducibly, across a killed-and-restarted Chrome
+  profile and a fully clean process state. The `browse` skill's own headless Chromium (a separate
+  binary, not the MCP server) connected on the first try and was used instead to drive the actual
+  verification of the Schedules panel — see the task report for the screenshots and the exact
+  interaction sequence. If this MCP server is relied on for a future task's browser verification,
+  budget time for it to simply not work and have a fallback ready.
+
+- **The task brief's own suggested CI assertion (`npm pack --dry-run | grep -q dist/client`) is
+  the weaker pattern spec 4 already rejected, on the record, in `ci.yml`'s own comments** —
+  `--dry-run` still runs `prepack` and vite's build step unconditionally logs
+  `../dist/client/index.html ...` to stdout the moment `build:client` runs, even under the
+  dangerous build order that lets `nuxt-module-build build`'s `clean: true` wipe it back out
+  moments later — so grepping combined stdout for that text cannot fail even when `dist/client`
+  is genuinely empty at pack time, confirmed by deliberately reintroducing the dangerous order in
+  spec 4 and watching the grep stay green regardless. `ci.yml` already runs a real `npm pack`
+  followed by `tar -tzf ... | grep -q 'package/dist/client/'` against the actual archive contents,
+  which does not have this blind spot, and was left unchanged rather than downgraded to match the
+  brief's suggested one-liner. The one-liner was still run locally, as this task's own rules
+  required, purely as a sanity check — see the task report.
+
+## Facts found only by the whole-branch review, after all 14 tasks were green
+
+- **A requirement can be lost between spec and plan even when both are detailed, and this spec's
+  own missed-tick backfill guarantee is the proof.** The spec — and the shipped README — state
+  unqualified that "a missed window produces at most one catch-up run, never a backfill." The
+  spec also explicitly calls for a conformance case covering it. No task in the 14-task plan was
+  ever assigned that case, on either driver, and none of tasks 7-9's own test coverage happened to
+  exercise a *late-firing* timer (every existing scheduling test lets the timer fire on or near
+  schedule). The result shipped broken: `memory.ts`'s `arm()` computed the next tick from the
+  *previous scheduled tick* (`current.next`) rather than from `Date.now()` when the fire callback
+  ran, so once a real timer fires late — a suspended laptop, a blocked event loop, an NTP jump —
+  `current.next` is already in the past, `delay` computes to `0`, and the re-armed timer fires
+  again immediately, replaying every missed window in a chained `setTimeout(…, 0)` loop. Measured
+  directly: `* * * * *` with the clock advanced 10m30s before the pending timer was allowed to run
+  produced 11 waiting jobs; the fix (`Math.max(current.next, Date.now())`) bounds it to 1. `bullmq`
+  never had this bug — its own `job-scheduler.js` sets `now = max(Date.now(), prevMillis)` before
+  computing the next tick, by the same reasoning — so this was a `memory`-only defect, but the
+  spec's conformance requirement was never satisfied for either driver until this review added
+  `test/unit/cron-dedup-conformance.test.ts`'s "a timer that fires late does not replay every
+  missed tick" case (fake-timers, `memory` only — see that test's own comment for why the
+  equivalent stall cannot be simulated against `bullmq` without a real multi-minute wait). The
+  general lesson: "the plan covers the spec" is an assumption that needs checking against the
+  spec's own explicit requirements line by line, not just against the plan's task list — a
+  detailed plan can still silently drop an explicit spec requirement into the gap between two
+  tasks that each looked complete on their own.
+
+- **`backoff` on a scheduler-produced job reaches no assertion on either driver, and is correct by
+  code reading only.** `attempts` on a scheduler-produced tick is asserted in
+  `memory-schedule.test.ts` (via `introspect.list('waiting', ...)`, which surfaces
+  `JobSummary.attempts`) and in the lifecycle retry-tick scenario; `backoff` is not, on either
+  driver, anywhere in the suite — `JobSummary` does not carry a `backoff` field at all, so there is
+  no introspectable surface a unit test could assert it through without a real failure-and-retry
+  round trip timed against the backoff delay itself. `reconcileSchedules` resolves
+  `job.backoff ?? defaults.backoff` onto `ScheduleSpec.backoff` identically to `attempts`, and both
+  drivers' schedule-production paths forward it the same way `attempts` is forwarded (verified by
+  reading `bullmq.ts`'s `upsertJobScheduler` call and `memory.ts`'s `arm()`'s `driverSelf.enqueue`
+  call side by side with the `attempts` forwarding next to each). Recorded here rather than left
+  silent, as the project's own convention for exactly this shape of gap (see the debounce-`replace`
+  gap above) requires.
+
+## Facts found after the branch was green, in CI and in external review
+
+These landed after the sections above were written. They are the most transferable
+lessons of the spec, because none of them were findable by reading a diff.
+
+- **A playground fixture is shared infrastructure, and an always-on one corrupts every
+  scenario that is not testing it.** `playground/server/jobs/heartbeat-digest.ts` was added
+  for the cron lifecycle scenario with `cron: '* * * * *'`. Every lifecycle scenario spawns
+  with a worker role and passes `CONCIERGE_TEST_LOG`, so the digest reconciled and fired in
+  scenarios with nothing to do with cron, appending its `{ name, tick, tz, attempt }` line to
+  the log they assert on. `summarise` counts distinct `jobId`; the digest line has none;
+  `undefined` became an eleventh key and CI failed on the SIGKILL-recovery scenario with
+  `expected 11 to be 10` — a scenario this spec never touched. Neither the task review nor the
+  whole-branch review caught it, because the fixture is entirely reasonable read on its own.
+  Schedules are now off by default in `spawnApp` (`NUXT_CONCIERGE_CRON_ENABLED`), and
+  `startApp` opts in, so `cron.test.ts` exercises the switch enabled and every other scenario
+  exercises it disabled.
+
+- **Polling a proxy for what you assert lets the assertion pass by luck.** `waitForLogCount`
+  counts LINES, but every caller in `shutdown.test.ts` means "N distinct jobs completed". Any
+  line satisfies it — which is why the digest line let the scenario reach "10 lines" with 9
+  real completions and pass, and why it failed only on a slower runner where the tenth landed
+  first. `waitForCompletedJobs` polls distinct `jobId`s instead. The general rule: **the wait
+  and the assertion must be about the same quantity**, or the wait can be satisfied by
+  something the test is not asserting about. `dashboard.test.ts` deliberately keeps
+  `waitForLogCount`, because a retry appends a second line for the SAME `jobId` — there, "the
+  retry re-ran the job" really is a statement about line count.
+
+- **The shared resource has to assert its own invariant.** `test/lifecycle/isolation.test.ts`
+  encodes the property that was violated: *a freshly spawned app does no work until a scenario
+  asks it to*. It is the slowest test in the suite (~70s, which is what it takes to observe a
+  minute-granularity schedule) and that cost is the point — every faster check is blind to the
+  exact case that shipped. Verified to fail when the always-on default is restored.
+
+- **`setTimeout` silently clamps a delay past ~24.8 days (2^31-1 ms).** A monthly or yearly
+  cron computes a delay beyond that, and Node clamps it to fire almost immediately, then
+  re-arms in a loop. `memory.ts`'s `arm()` chunks waits at `MAX_TIMEOUT_MS`. Found during
+  task 7's unref verification, not by any test.
+
+- **A `.d.ts` grep proves nothing about an inherited API.** This spec asserted that
+  `Queue.getDeduplicationJobId` does not exist in bullmq 5.63.0, having grepped
+  `classes/queue.d.ts` alone; it is declared on `QueueGetters`, which `Queue` extends. The
+  driver shipped a hand-rolled key read before review caught it. Every other "verified against
+  the installed source" claim here was checked by execution — this was the one exception, and
+  it was the one that was wrong.
+
+- **An external reviewer's finding can be right about the problem and wrong about the fix.**
+  Of eight CodeRabbit findings on the PR, six were valid and fixed. One was wrong on the facts
+  (that `cron-parser`'s `next()` can return a time at or before its reference with nonzero
+  milliseconds — tested against 4.9.0 with `.500` and `.999` inputs across per-second and
+  per-minute expressions; strictly after every time, and the reviewer's own embedded research
+  said so). One was right that `bullmq`'s `deduplicated` flag races, but proposed "use an
+  atomic signal from the add operation", which does not exist — `add()` returns the existing
+  `Job` on suppression with nothing distinguishing it. The only genuinely atomic route is
+  supplying custom job ids, which would change every job id from BullMQ's numeric counter to
+  ours, visible in `JobSummary.id`, the dashboard and existing tests. Left documented.
+
+- **`memory`'s `introspect.retry` rebuilds from a `TerminalRecord`, so every field that record
+  does not hold is silently dropped on retry.** `bullmq` keeps everything for free, because
+  `job.retry()` reuses the original job record. `cron` and the dedup id were both being lost,
+  so a dashboard retry of a failed scheduled job handed the handler `ctx.cron === undefined` —
+  losing the tick-based idempotency key on the path most likely to re-run partly-done work.
+  Both are now stored and restored, with a conformance case holding both drivers to it. If a
+  future field is added to a queued job, it needs adding in three places, not one.
+
+## Constraint carried forward to whatever ships next
+
+- **No paid dependencies.** BullMQ Pro's groups are the direct answer to global per-key
+  concurrency, and they are ruled out on that basis, not on technical grounds. This matters
+  most for deferred item 1 (execution serialization / `while_executing` / global cron
+  overlap): it has to be a lease this project owns — held for a job's duration, renewed
+  against the holder's liveness, released on crash — which is the distributed-systems work
+  spec 5 declined twice, once for cron reconciliation and once for `while_executing`.
+  Recorded because "just use BullMQ Pro" is the first thing anyone will suggest, and
+  re-arguing it every time is waste.

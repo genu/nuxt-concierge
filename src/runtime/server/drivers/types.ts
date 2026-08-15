@@ -44,6 +44,34 @@ export interface EnqueueOptions {
    * strategies.
    */
   backoff?: BackoffOptions
+  /**
+   * Resolved by `useQueue` from the job's own `unique`/`uniqueId`, never by a
+   * driver. Absent means "do not deduplicate this enqueue".
+   */
+  dedup?: DedupOptions
+  /**
+   * Set only by a driver's own scheduler when producing a tick, never by
+   * `useQueue`. It is what populates `JobContext.cron`.
+   *
+   * HONOURED BY ONE DRIVER OF THREE. `memory` reads it — its own scheduler
+   * (see `arm()` in drivers/memory.ts) attaches it to the job it produces and
+   * the consume loop forwards it straight into `JobContext.cron`. `bullmq`
+   * IGNORES this field entirely: its scheduler derives tick metadata from the
+   * repeatable job's own `repeatJobKey`/`prevMillis` on the produced job
+   * instead (see the scheduling comments in drivers/bullmq.ts), never from an
+   * `EnqueueOptions` the producer passed in. `sync` ignores it too — it has no
+   * scheduler of its own.
+   *
+   * Nothing outside a driver sets this today, so the asymmetry is currently a
+   * trap rather than a live bug. But it is shaped exactly like the retry
+   * divergence this spec exists to prevent: if something is ever tempted to
+   * thread `cron` through `EnqueueJobOptions` so a caller (e.g. `useQueue`, or
+   * a manual "run now") could populate it, that would work in dev on `memory`
+   * and silently do nothing in production on `bullmq`. Whoever does that MUST
+   * make `bullmq` honour this field first and add a conformance case for it in
+   * the shared cron table — otherwise they ship a dev-only feature.
+   */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 export interface ConsumeOptions {
@@ -115,6 +143,13 @@ export interface JobDetail extends JobSummary {
   stack?: string
   /** Driver-specific extras. Display-only; nothing branches on this. */
   raw?: Record<string, unknown>
+  /**
+   * First-class rather than a `raw` entry, because the shared conformance
+   * table asserts on it and `raw` is documented as driver-specific,
+   * display-only, and branched on by nothing. If a test asserts it, it does
+   * not belong in the escape hatch.
+   */
+  deduplicationId?: string
 }
 
 export interface DriverIntrospection {
@@ -142,6 +177,127 @@ export interface DriverIntrospection {
   retry: (queue: string, id: string) => Promise<void>
 }
 
+/**
+ * Mirrors BullMQ's `DeduplicationOptions` field-for-field and deliberately, so
+ * the bullmq driver passes it straight through. Any translation layer here is
+ * a place for a semantic drift to hide — the same reasoning that keeps
+ * `BackoffOptions` shaped like BullMQ's own.
+ *
+ * The three shapes that matter, verified against
+ * `bullmq/dist/esm/scripts/moveToFinished-14.js` in 5.63.0:
+ *
+ * - `{ id }`            LOCK. No expiry; the key is deleted when the job moves
+ *                       to completed OR terminally failed, so it spans queued
+ *                       and executing. An INTERMEDIATE failure does not release
+ *                       it (retries go through moveToDelayed, not moveToFinished).
+ * - `{ id, ttl }`       THROTTLE. On finalization `PTTL` is positive, so neither
+ *                       delete branch fires and the key survives to expiry.
+ * - `{ id, ttl, extend, replace }`
+ *                       DEBOUNCE. `extend` re-arms the TTL on each suppressed
+ *                       enqueue; `replace` supersedes the pending delayed job.
+ */
+export interface DedupOptions {
+  id: string
+  ttl?: number
+  extend?: boolean
+  replace?: boolean
+}
+
+export interface EnqueueResult {
+  id: string
+  /**
+   * True when this call was SUPPRESSED and `id` refers to the pre-existing
+   * job rather than a new one.
+   *
+   * BullMQ hands back the existing id with no signal at all, which is the part
+   * deliberately not copied: silent deduplication turns "why didn't my job
+   * run?" into a debugging session. `sync` always reports `false` — it
+   * executes inline and does not deduplicate, exactly as it does not retry.
+   *
+   * KNOWN LIMITATION, one-directional. On the `bullmq` driver the check is a
+   * read of the dedup key followed by the add — two round trips — so two
+   * callers racing on the same key can both read an empty key, and the loser
+   * reports `deduplicated: false` for an enqueue that was in fact suppressed.
+   * The error only ever runs that way: a fresh enqueue is never reported as
+   * deduplicated, because BullMQ's ids are monotonic per queue, so a stale key
+   * holder can never equal a newly created job's id.
+   *
+   * The consequence is a caller that believes it created a job when it did
+   * not. No job is lost or double-run — the deduplication itself is atomic
+   * inside BullMQ's Lua; it is only this REPORTING that can be stale.
+   * `memory` has no equivalent race because its check-and-write is
+   * synchronous with no `await` between them.
+   */
+  deduplicated: boolean
+}
+
+/** What a driver is asked to install. Resolved; never the user's shorthand. */
+export interface ScheduleSpec {
+  /** `concierge:<jobName>`. Namespaced so the sweep can ignore foreign schedulers. */
+  id: string
+  jobName: string
+  expression: string
+  /** IANA zone. Always present — resolution defaults it to UTC, never system-local. */
+  tz: string
+  payload?: unknown
+  /**
+   * `reconcileSchedules` always resolves this against `concierge.defaults`
+   * before it reaches a driver, so a REAL schedule never leaves it
+   * `undefined` — optional here only so a hand-built spec (as every
+   * `planReconciliation` unit test constructs) is not forced to restate it
+   * for logic that never inspects it. Without this resolution, a
+   * scheduler-produced job got BullMQ's (or `memory`'s) bare default of a
+   * single attempt and no backoff, silently discarding the job's own
+   * `attempts`/`backoff` — indistinguishable from every OTHER attempt of
+   * that same job, which does get them, since only the schedule-production
+   * path was missing this wiring. Found by test/lifecycle/cron.test.ts's
+   * "reports the same tick across a retry" scenario, the only coverage
+   * anywhere that fails a scheduler-produced job and checks it actually
+   * retries.
+   */
+  attempts?: number
+  backoff?: BackoffOptions
+}
+
+export interface ScheduleSummary {
+  id: string
+  jobName: string
+  queue: string
+  expression: string
+  tz: string
+  /** Next fire time, when the driver knows it. */
+  next?: number
+  /**
+   * Ticks produced so far, when the driver tracks it.
+   *
+   * There is deliberately no `last` field. `JobSchedulerJson` (bullmq 5.63.0)
+   * exposes no previous-fire time — `RepeatOptions.prevMillis` is marked
+   * internal and is not returned — and deriving one from the most recent
+   * produced job is an extra read per row whose only purpose is to make a
+   * column look complete.
+   */
+  iterationCount?: number
+}
+
+/**
+ * Presence IS the capability, exactly as with `introspect`. A driver either
+ * schedules or does not, as a type-level fact. Boolean flags alongside optional
+ * methods permit a driver declaring support it lacks, and typecheck fine.
+ *
+ * TICK-UNIQUENESS IS A DRIVER RESPONSIBILITY, NOT THE SUPERVISOR'S. Every
+ * instance reconciles at boot with no coordination, because `bullmq` guarantees
+ * one delayed job in flight per scheduler atomically in Lua and `memory` is
+ * single-process. A driver with neither property would double-fire every
+ * schedule on every instance, silently. This comment is the only warning its
+ * author will get.
+ */
+export interface DriverScheduling {
+  /** Idempotent by `spec.id`. A changed expression updates in place. */
+  upsert: (queue: string, spec: ScheduleSpec) => Promise<void>
+  list: (queue: string) => Promise<ScheduleSummary[]>
+  remove: (queue: string, id: string) => Promise<void>
+}
+
 export interface ConciergeDriver {
   readonly name: string
   readonly capabilities: DriverCapabilities
@@ -156,6 +312,8 @@ export interface ConciergeDriver {
    * unrepresentable rather than merely untested.
    */
   readonly introspect?: DriverIntrospection
+
+  readonly schedule?: DriverScheduling
 
   init: () => Promise<void>
   close: (force: boolean) => Promise<void>
@@ -175,7 +333,7 @@ export interface ConciergeDriver {
   /** Associates a handler with a queue+name. Called at boot for every scanned job. */
   registerHandler: (queue: string, name: string, handler: JobHandler) => void
 
-  enqueue: (queue: string, job: EnqueueOptions) => Promise<{ id: string }>
+  enqueue: (queue: string, job: EnqueueOptions) => Promise<EnqueueResult>
   consume: (queue: string, opts: ConsumeOptions, onJob?: JobHandler) => Consumer
   /**
    * The number of jobs on `queue` that are due now and not yet started —

@@ -1,5 +1,7 @@
 import { getDriver } from '../supervisor'
 import { validateOnEnqueue } from '../validate'
+import { resolveDedup } from '../dedup'
+import type { EnqueueResult } from '../drivers/types'
 
 export interface EnqueueJobOptions {
   delay?: number
@@ -10,7 +12,7 @@ export interface TypedQueue<Map> {
     name: K,
     payload: Map[K],
     opts?: EnqueueJobOptions,
-  ) => Promise<{ id: string }>
+  ) => Promise<EnqueueResult>
 }
 
 /**
@@ -54,6 +56,23 @@ export const useQueue = (): TypedQueue<Record<string, unknown>> => ({
       // attach them.
       attempts: entry.attempts ?? defaults.attempts,
       backoff: entry.backoff ?? defaults.backoff,
+      // Derived from the RAW payload, deliberately. `validateOnEnqueue`
+      // discards its result so a transforming schema runs exactly once — in
+      // the worker — which means the transformed value does not exist here and
+      // the key must come from what the caller actually passed.
+      dedup: resolveDedup({
+        jobName: String(name),
+        payload,
+        unique: entry.unique,
+        // Cast for the same reason `defineJob` casts on the way in:
+        // `RegistryEntry.uniqueId` holds `(payload: never) => string`
+        // contravariantly across every payload type in the registry, while
+        // `resolveDedup` accepts the permissive `(payload: any) => string` —
+        // sound here because this payload has already been validated
+        // against this exact job's own schema.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see comment above
+        uniqueId: entry.uniqueId as ((payload: any) => string) | undefined,
+      }),
     })
   },
 })

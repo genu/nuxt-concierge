@@ -1,8 +1,9 @@
 import { consola } from 'consola'
 import { decodePayload, encodePayload } from '../envelope'
+import { nextFireTime } from '../cron'
 import type { MemoryOptions } from '../../../options'
 import type { ActiveJob, BackoffOptions, JobHandler, WorkerRecord } from '../types'
-import type { ConciergeDriver, Consumer, JobDetail, JobState, JobSummary } from './types'
+import type { ConciergeDriver, Consumer, DedupOptions, EnqueueOptions, JobDetail, JobState, JobSummary, ScheduleSpec } from './types'
 
 /** Exported so tests can spy on it instead of asserting on console output. */
 export const logger = consola.create({}).withTag('nuxt-concierge')
@@ -20,6 +21,9 @@ interface QueuedJob {
   attempts?: number
   backoff?: BackoffOptions
   createdAt: number
+  dedup?: DedupOptions
+  /** Present only when this job was produced by the driver's own scheduler. */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 /**
@@ -73,6 +77,21 @@ interface TerminalRecord {
   finishedAt: number
   failedReason?: string
   stack?: string
+  dedupId?: string
+  /**
+   * Retained so `introspect.retry` can put it back on the re-queued job.
+   *
+   * `bullmq` keeps this for free — `job.retry()` reuses the same job record,
+   * which still carries `repeatJobKey`/`opts.prevMillis`, so
+   * `cronContextFromJob` reconstructs `ctx.cron` on the retried attempt. This
+   * driver rebuilds the job from a `TerminalRecord` instead, so anything the
+   * record does not hold is lost. Without this, retrying a failed scheduled
+   * job from the dashboard hands the handler `ctx.cron === undefined` — and
+   * `ctx.cron.tick` is exactly what a handler is told to use as its
+   * idempotency key, so it goes missing on the one path most likely to
+   * re-run work that already partly happened.
+   */
+  cron?: { tick: number, expression: string, tz: string }
 }
 
 /**
@@ -108,6 +127,63 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     return history.get(queue)!
   }
 
+  /**
+   * Dedup keys, scoped by queue exactly as BullMQ's are (its key is
+   * `<prefix>:<queue>:de:<id>`), so the same id on two queues does not
+   * collide.
+   *
+   * `expiresAt` is checked LAZILY on read rather than with a timer per key. A
+   * timer per key is a leak the driver would have to track and tear down, for
+   * no benefit in a driver whose entire lifetime is bounded by the process.
+   */
+  const dedupKeys = new Map<string, { jobId: string, expiresAt?: number }>()
+
+  const dedupKey = (queue: string, id: string) => `${queue}::${id}`
+
+  const liveDedup = (queue: string, id: string) => {
+    const entry = dedupKeys.get(dedupKey(queue, id))
+    if (!entry) return undefined
+    if (entry.expiresAt !== undefined && entry.expiresAt <= Date.now()) {
+      dedupKeys.delete(dedupKey(queue, id))
+      return undefined
+    }
+    return entry
+  }
+
+  /**
+   * Mirrors `removeDeduplicationKeyIfNeededOnFinalization` in
+   * bullmq/dist/esm/scripts/moveToFinished-14.js: a key with NO expiry is
+   * deleted when the job finalizes; a key WITH one is left to expire. That
+   * asymmetry is the whole difference between lock mode and throttle mode, and
+   * `memory` has to reproduce it exactly or the two drivers disagree about
+   * which enqueues are suppressed.
+   *
+   * The `jobId` guard mirrors BullMQ's `currentJobId == jobId` check: a key
+   * already re-taken by a newer job must not be released by an older one
+   * finishing.
+   */
+  const releaseDedupOnFinalize = (queue: string, id: string | undefined, jobId: string) => {
+    if (!id) return
+    const k = dedupKey(queue, id)
+    const entry = dedupKeys.get(k)
+    if (!entry || entry.expiresAt !== undefined) return
+    if (entry.jobId === jobId) dedupKeys.delete(k)
+  }
+
+  const buildQueuedJob = (id: string, queue: string, job: EnqueueOptions): QueuedJob => ({
+    id,
+    name: job.name,
+    queue,
+    envelope: encodePayload(job.payload),
+    attempt: 0,
+    runAt: Date.now() + (job.delay ?? 0),
+    attempts: job.attempts,
+    backoff: job.backoff,
+    createdAt: Date.now(),
+    dedup: job.dedup,
+    cron: job.cron,
+  })
+
   const remember = (record: TerminalRecord) => {
     const bucket = historyOf(record.queue)
     bucket.push(record)
@@ -136,6 +212,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     failedReason: record.failedReason,
     stack: record.stack,
     envelope: record.envelope,
+    deduplicationId: record.dedupId,
   })
 
   /**
@@ -193,7 +270,92 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       }))
   }
 
-  return {
+  interface ScheduleEntry {
+    spec: ScheduleSpec
+    queue: string
+    next: number
+    iterationCount: number
+    timer?: ReturnType<typeof setTimeout>
+  }
+
+  const schedules = new Map<string, ScheduleEntry>()
+  const scheduleKey = (queue: string, id: string) => `${queue}::${id}`
+
+  /**
+   * Node/V8 timer delays are a 32-bit signed int internally
+   * (`TimeoutOverflowWarning`): a `setTimeout` asked for longer than this is
+   * silently clamped to fire almost immediately instead of throwing. A
+   * monthly cron (up to 31 days) already exceeds it, and yearly comfortably
+   * does — without the chunking below, `arm` would fire such a schedule
+   * within ~1ms of being armed and then keep re-firing in a tight loop
+   * instead of waiting for the real next tick.
+   */
+  const MAX_TIMEOUT_MS = 2_147_483_647
+
+  /**
+   * Arms one timer for the NEXT tick only, re-arming after each fire — never a
+   * setInterval. A cron expression's gaps are not uniform (month lengths, DST),
+   * so an interval would drift; and one live timer per schedule is what makes
+   * `close()` able to stop everything deterministically.
+   */
+  const arm = (key: string) => {
+    const entry = schedules.get(key)
+    if (!entry) return
+
+    const delay = Math.max(0, entry.next - Date.now())
+
+    if (delay > MAX_TIMEOUT_MS) {
+      // Wait out the largest safe chunk and re-arm, without firing anything
+      // or consuming the tick — this only shortens the remaining wait.
+      entry.timer = setTimeout(() => arm(key), MAX_TIMEOUT_MS)
+      entry.timer.unref?.()
+      return
+    }
+
+    entry.timer = setTimeout(() => {
+      const current = schedules.get(key)
+      if (!current) return
+
+      void driverSelf.enqueue(current.queue, {
+        name: current.spec.jobName,
+        payload: current.spec.payload,
+        // Resolved by reconcileSchedules against concierge.defaults — without
+        // forwarding these, a scheduler-produced job fell back to this
+        // driver's own bare "undefined attempts means one attempt" default,
+        // silently discarding the job's own retry policy on every tick.
+        attempts: current.spec.attempts,
+        backoff: current.spec.backoff,
+        cron: {
+          // The SCHEDULED time, not Date.now(). They differ by timer latency,
+          // and only the scheduled time is stable across a retry of this tick.
+          tick: current.next,
+          expression: current.spec.expression,
+          tz: current.spec.tz,
+        },
+      })
+
+      current.iterationCount++
+      // Advance from NOW when the timer fired late, not from the tick it was
+      // supposed to serve. A suspended laptop, a blocked event loop or an NTP
+      // jump can leave `next` well in the past — computing the following tick
+      // from it would put that one in the past too, re-arm at delay 0, and
+      // replay every missed window in a chained setTimeout loop. bullmq skips
+      // missed windows the same way (`now = max(Date.now(), prevMillis)` in
+      // job-scheduler.js), and the README promises at most one catch-up run.
+      current.next = nextFireTime(current.spec.expression, current.spec.tz, Math.max(current.next, Date.now()))
+      arm(key)
+    }, delay)
+    // Never holds the process open on its own — only real work should. Matches
+    // how the supervisor's heartbeat interval is handled.
+    entry.timer.unref?.()
+  }
+
+  const disarm = (entry: ScheduleEntry) => {
+    if (entry.timer) clearTimeout(entry.timer)
+    entry.timer = undefined
+  }
+
+  const driverSelf: ConciergeDriver = {
     name: 'memory',
     capabilities: { persistent: false, crossProcess: false, history: 'bounded' },
 
@@ -243,6 +405,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             attempts: queued.attempts,
             createdAt: queued.createdAt,
             envelope: queued.envelope,
+            deduplicationId: queued.dedup?.id,
           }
         }
 
@@ -305,7 +468,58 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
           attempts: record!.attempts,
           backoff: record!.backoff,
           createdAt: record!.createdAt,
+          // Both restored for the same reason: `bullmq`'s `job.retry()` reuses
+          // the original job record, so a retried job there keeps everything it
+          // had. This driver rebuilds from a `TerminalRecord`, so every field
+          // omitted here is silently dropped on retry — and the two that matter
+          // are the ones a handler and the dashboard actually read.
+          //
+          // `cron` carries `ctx.cron.tick`, the idempotency key a scheduled
+          // handler is told to rely on; losing it on retry loses it on the one
+          // path most likely to re-run partly-done work. `dedup` is what keeps
+          // `deduplicationId` visible on the job detail after a retry, which
+          // the conformance table asserts round-trips.
+          cron: record!.cron,
+          dedup: record!.dedupId ? { id: record!.dedupId } : undefined,
         })
+      },
+    },
+
+    schedule: {
+      upsert: async (queue, spec) => {
+        const scheduleId = scheduleKey(queue, spec.id)
+        const existing = schedules.get(scheduleId)
+        // Update IN PLACE rather than remove-then-add: a remove-then-add would
+        // open a window in which the schedule does not exist, and would reset
+        // iterationCount on every boot of every instance.
+        if (existing) disarm(existing)
+
+        schedules.set(scheduleId, {
+          spec,
+          queue,
+          next: nextFireTime(spec.expression, spec.tz, Date.now()),
+          iterationCount: existing?.iterationCount ?? 0,
+        })
+        arm(scheduleId)
+      },
+
+      list: async queue => [...schedules.values()]
+        .filter(e => e.queue === queue)
+        .map(e => ({
+          id: e.spec.id,
+          jobName: e.spec.jobName,
+          queue: e.queue,
+          expression: e.spec.expression,
+          tz: e.spec.tz,
+          next: e.next,
+          iterationCount: e.iterationCount,
+        })),
+
+      remove: async (queue, id) => {
+        const scheduleId = scheduleKey(queue, id)
+        const entry = schedules.get(scheduleId)
+        if (entry) disarm(entry)
+        schedules.delete(scheduleId)
       },
     },
 
@@ -314,9 +528,12 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
 
     close: async (force) => {
       await Promise.all(consumers.splice(0).map(c => c.close(force)))
+      for (const entry of schedules.values()) disarm(entry)
+      schedules.clear()
       pending.clear()
       history.clear()
       inFlight.clear()
+      dedupKeys.clear()
     },
 
     registerHandler: (queue, name, handler) => {
@@ -324,19 +541,63 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
     },
 
     enqueue: async (queue, job) => {
+      if (job.dedup) {
+        const k = dedupKey(queue, job.dedup.id)
+        const existing = liveDedup(queue, job.dedup.id)
+
+        if (existing) {
+          if (job.dedup.replace) {
+            // DEBOUNCE. Supersede the pending job so the burst collapses onto
+            // the LAST payload, and re-arm the window when `extend` is set.
+            // Only a job still in the `pending` array (waiting OR delayed) can
+            // be replaced — one already claimed by the poll loop (active) or
+            // finished is not "pending" in any sense BullMQ's own
+            // removeDelayedJob would recognise.
+            const q = queueOf(queue)
+            const idx = q.findIndex(j => j.id === existing.jobId)
+            if (idx !== -1) {
+              q.splice(idx, 1)
+              const id = `mem-${++counter}`
+              q.push(buildQueuedJob(id, queue, job))
+              dedupKeys.set(k, {
+                jobId: id,
+                expiresAt: job.dedup.extend && job.dedup.ttl !== undefined
+                  ? Date.now() + job.dedup.ttl
+                  : existing.expiresAt,
+              })
+              return { id, deduplicated: false }
+            }
+            // Nothing to supersede — the target was already claimed by the
+            // poll loop or has finished. This enqueue is simply suppressed, so
+            // fall through to the shared re-arm below rather than returning
+            // early.
+          }
+
+          // Applies to EVERY suppressed enqueue, replace or not. Hoisted out
+          // of the replace branch deliberately: a `{ extend, replace }`
+          // debounce whose target had already gone active used to fall past
+          // this and let the window lapse, so a burst against a long-running
+          // job silently produced a second run — the exact failure debounce
+          // exists to prevent.
+          if (job.dedup.extend && job.dedup.ttl !== undefined) {
+            dedupKeys.set(k, { jobId: existing.jobId, expiresAt: Date.now() + job.dedup.ttl })
+          }
+
+          return { id: existing.jobId, deduplicated: true }
+        }
+
+        const id = `mem-${++counter}`
+        queueOf(queue).push(buildQueuedJob(id, queue, job))
+        dedupKeys.set(k, {
+          jobId: id,
+          expiresAt: job.dedup.ttl !== undefined ? Date.now() + job.dedup.ttl : undefined,
+        })
+        return { id, deduplicated: false }
+      }
+
       const id = `mem-${++counter}`
-      queueOf(queue).push({
-        id,
-        name: job.name,
-        queue,
-        envelope: encodePayload(job.payload),
-        attempt: 0,
-        runAt: Date.now() + (job.delay ?? 0),
-        attempts: job.attempts,
-        backoff: job.backoff,
-        createdAt: Date.now(),
-      })
-      return { id }
+      queueOf(queue).push(buildQueuedJob(id, queue, job))
+      return { id, deduplicated: false }
     },
 
     consume: (queue, opts, onJob): Consumer => {
@@ -361,8 +622,10 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             queue,
             attempt: job.attempt,
             payload: decodePayload(job.envelope),
+            cron: job.cron,
           })
 
+          releaseDedupOnFinalize(queue, job.dedup?.id, job.id)
           remember({
             id: job.id,
             name: job.name,
@@ -374,6 +637,8 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
             backoff: job.backoff,
             createdAt: job.createdAt,
             finishedAt: Date.now(),
+            dedupId: job.dedup?.id,
+            cron: job.cron,
           })
         }
         catch (error) {
@@ -411,6 +676,7 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               : `failed after ${job.attempt} attempt(s)`
             logger.error(`[${queue}] job "${job.name}" (${job.id}) ${reason}`, error)
 
+            releaseDedupOnFinalize(queue, job.dedup?.id, job.id)
             remember({
               id: job.id,
               name: job.name,
@@ -424,6 +690,8 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
               finishedAt: Date.now(),
               failedReason: error instanceof Error ? error.message : String(error),
               stack: error instanceof Error ? error.stack : undefined,
+              dedupId: job.dedup?.id,
+              cron: job.cron,
             })
           }
         }
@@ -491,4 +759,6 @@ export const createMemoryDriver = (opts?: Partial<MemoryOptions>): ConciergeDriv
       return [...records.values()].map(e => e.record)
     },
   }
+
+  return driverSelf
 }

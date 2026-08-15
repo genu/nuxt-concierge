@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import IORedis from 'ioredis'
+import { Queue } from 'bullmq'
 
 export interface AppHandle {
   proc: ChildProcess
@@ -23,6 +24,39 @@ export interface SpawnOptions {
   stalledInterval?: number
   port?: number
   logPath?: string
+  /**
+   * Name of a job that should throw on its first attempt only. Read by
+   * `playground/server/jobs/heartbeat-digest.ts` (the only fixture that
+   * checks it) via `CONCIERGE_FAIL_FIRST_ATTEMPT` — a bespoke, test-only env
+   * var, not a `NUXT_`-prefixed runtime-config override, since it names a
+   * behaviour the module itself has no concept of.
+   */
+  failFirstAttempt?: string
+  /**
+   * Whether the playground's declared cron jobs are scheduled at all.
+   *
+   * **Defaults to `false`, and that default is load-bearing.**
+   * `playground/server/jobs/heartbeat-digest.ts` runs every minute and appends
+   * to `CONCIERGE_TEST_LOG` — the SAME log the scenario that spawned this
+   * process is asserting on. Every scenario here runs a worker role, so
+   * without this the digest reconciles and fires in scenarios that have
+   * nothing to do with cron, and its `{ name, tick, tz, attempt }` line lands
+   * among their `{ jobId, attempt, pid, id }` ones.
+   *
+   * That is not hypothetical: it turned CI's SIGKILL-recovery scenario into
+   * `expected 11 to be 10`, because `summarise` counted the digest line's
+   * absent `jobId` as an eleventh distinct job. It is timing-dependent — the
+   * scenario polls for 10 LINES, so a digest line arriving before the tenth
+   * real completion masks the problem — which is why it passed locally and
+   * failed on a slower runner.
+   *
+   * The log is only the loudest symptom. A digest job firing mid-scenario also
+   * occupies a worker slot and adds queue depth, so `waitForActiveCount` and
+   * drain-timing assertions are exposed to it too.
+   *
+   * `test/lifecycle/cron.test.ts` opts in via `startApp`.
+   */
+  cronEnabled?: boolean
 }
 
 const OUTPUT = 'playground/.output/server/index.mjs'
@@ -84,6 +118,9 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       // on an invalid value) — it stays a bespoke read on purpose.
       CONCIERGE_ROLE: opts.role ?? 'both',
       CONCIERGE_TEST_LOG: logPath,
+      // Undefined when the caller does not ask for it — Node strips env keys
+      // whose value is `undefined` before spawning, same as VITEST below.
+      CONCIERGE_FAIL_FIRST_ATTEMPT: opts.failFirstAttempt,
       // Driver and the two timeouts are NOT bespoke env vars: Nuxt already
       // applies runtime env overrides to `runtimeConfig.concierge.*` using
       // the `NUXT_` prefix (verified against the built output's own
@@ -95,6 +132,13 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       NUXT_CONCIERGE_DRIVER: opts.driver ?? 'memory',
       NUXT_CONCIERGE_WORKER_SHUTDOWN_TIMEOUT: String(opts.shutdownTimeout ?? 20_000),
       NUXT_CONCIERGE_BULLMQ_STALLED_INTERVAL: String(opts.stalledInterval ?? 1000),
+      // OFF unless the scenario asks for it — see SpawnOptions.cronEnabled.
+      // Same NUXT_ override mechanism as the three above; `concierge.cron.enabled`
+      // -> NUXT_CONCIERGE_CRON_ENABLED. `false` here does not merely skip
+      // scheduling in this process, it reconciles with an empty declared set,
+      // so a schedule left in Redis by an earlier scenario is pruned rather
+      // than inherited.
+      NUXT_CONCIERGE_CRON_ENABLED: String(opts.cronEnabled ?? false),
       // Keep Nitro's own budget above ours so it is not the limiting factor.
       NITRO_SHUTDOWN_TIMEOUT: '25000',
       NODE_ENV: 'production',
@@ -407,22 +451,29 @@ export interface LogLine { jobId: number, attempt: number, pid: number, id: stri
  * scenario, not a bug. A malformed line ANYWHERE ELSE is a real bug in the
  * job or the harness and must still throw loudly rather than being silently
  * dropped.
+ *
+ * Extracted from `readLog` (rather than duplicated) so the cron scenario's
+ * `readHeartbeatLog` below — a different line shape entirely
+ * (`name`/`tick`/`tz`/`attempt`, not `jobId`/`id`/`pid`) — tolerates that
+ * exact same torn-line case identically, instead of quietly diverging.
  */
-export const readLog = (app: AppHandle): LogLine[] => {
-  const lines = readFileSync(app.logPath, 'utf8').split('\n').filter(Boolean)
+const parseLogFile = (path: string): unknown[] => {
+  const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
 
   return lines
     .map((line, i) => {
       try {
-        return JSON.parse(line) as LogLine
+        return JSON.parse(line) as unknown
       }
       catch (error) {
         if (i === lines.length - 1) return undefined
         throw error
       }
     })
-    .filter((line): line is LogLine => line !== undefined)
+    .filter(line => line !== undefined)
 }
+
+export const readLog = (app: AppHandle): LogLine[] => parseLogFile(app.logPath) as LogLine[]
 
 /**
  * Polls the append-only log rather than sleeping a fixed duration, for a
@@ -438,7 +489,63 @@ export const waitForLogCount = async (app: AppHandle, count: number, timeoutMs =
     await new Promise(r => setTimeout(r, 25))
   }
 
+  // One last look before giving up. The loop checks, sleeps 25ms, then re-tests
+  // the deadline — so a line written during that final sleep is never seen, and
+  // the wait reports a timeout for work that actually finished. A false timeout
+  // is a flaky CI failure, which is the exact thing this harness has been
+  // hardened against elsewhere.
+  if (readLog(app).length >= count) return
+
   throw new Error(`log did not reach ${count} lines within ${timeoutMs}ms`)
+}
+
+/**
+ * Waits for `count` DISTINCT jobs to have completed — not for the log to reach
+ * `count` lines.
+ *
+ * Use this whenever the assertion that follows is about distinct jobs.
+ * `waitForLogCount` counts lines, which is a PROXY for that, and a proxy a
+ * scenario does not control: any line satisfies it, including one written by a
+ * fixture the scenario is not exercising. That is not theoretical — it is
+ * precisely how a stray cron line let CI's SIGKILL-recovery scenario satisfy
+ * "10 lines" with only 9 real completions and then assert `completed.size` was
+ * 10 by luck. On a slower runner the tenth completion landed first, the count
+ * became 11, and the scenario failed. Polling the same quantity the assertion
+ * checks removes that race entirely: it cannot be satisfied early by something
+ * the test is not asserting about.
+ *
+ * Lines with no numeric `jobId` are IGNORED here rather than rejected. That is
+ * deliberate and complementary to `summarise`, which throws on them: the wait's
+ * job is to not be fooled, the summary's job is to surface why. If this threw
+ * instead, a scenario would fail at the wait with the log half-written, which
+ * is a worse place to diagnose from.
+ *
+ * Retries of the SAME job do not advance this count — they append a line with
+ * the same `jobId`. `test/lifecycle/dashboard.test.ts` depends on that
+ * distinction and correctly uses `waitForLogCount` instead, because "the retry
+ * re-ran the job" IS a statement about line count.
+ */
+export const waitForCompletedJobs = async (
+  app: AppHandle,
+  count: number,
+  timeoutMs = 10_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  const distinct = () =>
+    new Set(readLog(app).filter(l => typeof l.jobId === 'number').map(l => l.jobId)).size
+
+  while (Date.now() < deadline) {
+    if (distinct() >= count) return
+    await new Promise(r => setTimeout(r, 25))
+  }
+
+  // Same final look as `waitForLogCount`, for the same reason: a job completing
+  // during the last 25ms sleep would otherwise be reported as a timeout.
+  if (distinct() >= count) return
+
+  throw new Error(
+    `only ${distinct()} distinct job(s) completed within ${timeoutMs}ms, expected ${count}`,
+  )
 }
 
 export const waitForExit = (app: AppHandle, timeoutMs = 40_000): Promise<number | null> =>
@@ -456,10 +563,198 @@ export const cleanup = (app: AppHandle) => {
 /** Distinct job seqs seen, and how many ran more than once. */
 export const summarise = (lines: LogLine[]) => {
   const counts = new Map<number, number>()
-  for (const l of lines) counts.set(l.jobId, (counts.get(l.jobId) ?? 0) + 1)
+  for (const l of lines) {
+    // A line that is not a job-completion record must not be counted as one.
+    // Without this the failure is an off-by-one — `undefined` becomes an extra
+    // key in `completed`, and `pids` gains an extra member — which reads as
+    // "the driver ran one job too many" and sends you looking at the driver.
+    // That is exactly how a cron fixture appending to a shared log turned into
+    // CI's `expected 11 to be 10`. Throwing names the real problem instead.
+    if (typeof l.jobId !== 'number') {
+      throw new Error(
+        `[lifecycle] a non-job line reached summarise(): ${JSON.stringify(l)}. `
+        + `Something other than a job fixture is appending to CONCIERGE_TEST_LOG `
+        + `for this scenario — check whether a schedule is live that should not be `
+        + `(see SpawnOptions.cronEnabled).`,
+      )
+    }
+    counts.set(l.jobId, (counts.get(l.jobId) ?? 0) + 1)
+  }
   return {
     completed: new Set(counts.keys()),
     duplicates: [...counts.entries()].filter(([, n]) => n > 1).length,
     pids: new Set(lines.map(l => l.pid)),
   }
 }
+
+// ---------------------------------------------------------------------------
+// Cron scheduler harness (test/lifecycle/cron.test.ts)
+// ---------------------------------------------------------------------------
+
+/** One line `playground/server/jobs/heartbeat-digest.ts` appends per attempt. */
+export interface HeartbeatLogLine { name: string, tick?: number, tz?: string, attempt: number }
+
+export const readHeartbeatLog = (app: AppHandle): HeartbeatLogLine[] =>
+  parseLogFile(app.logPath) as HeartbeatLogLine[]
+
+/** The subset of `ScheduleSummary` these scenarios need to assert on. */
+export interface SchedulerSummary { id: string, jobName: string }
+
+/**
+ * Opens a short-lived BullMQ `Queue` client directly against Redis and closes
+ * it again, rather than going through this app's own HTTP API — the
+ * `/_concierge/api/schedules` route only exists on a DEV server
+ * (`nuxt.options.dev`), and every scenario in cron.test.ts spawns the real
+ * BUILT output via `startApp`/`spawnApp`, which never registers it. This is
+ * the same pair of calls `src/runtime/server/drivers/bullmq.ts`'s own
+ * `schedule.list`/`schedule.upsert` make — reading and writing scheduler
+ * state exactly the way the driver itself does, just from outside the app
+ * process.
+ */
+const withQueue = async <T>(queueName: string, fn: (queue: Queue) => Promise<T>): Promise<T> => {
+  const url = process.env.REDIS_URL
+  if (!url) {
+    throw new Error(
+      '[lifecycle harness] REDIS_URL is required to talk to a BullMQ scheduler directly — '
+      + 'cron.test.ts must stay behind describe.runIf(process.env.REDIS_URL).',
+    )
+  }
+  const queue = new Queue(queueName, { connection: { url } })
+  try {
+    return await fn(queue)
+  }
+  finally {
+    await queue.close()
+  }
+}
+
+export interface StartAppOptions {
+  role?: 'web' | 'worker' | 'both'
+  failFirstAttempt?: string
+  /**
+   * Shares an existing log file instead of creating a new one — the two-worker
+   * scenario in cron.test.ts passes the FIRST process's `logPath` to the
+   * second so both processes' runs land in the one log a caller reads back,
+   * matching the same "same log so the second process appends to the first's
+   * records" convention `spawnApp`/shutdown.test.ts already establish for the
+   * SIGKILL-recovery scenario.
+   */
+  logPath?: string
+}
+
+export interface CronAppHandle extends AppHandle {
+  /** Every concierge-owned scheduler BullMQ currently reports for `queue`. */
+  listSchedulers: (queue: string) => Promise<SchedulerSummary[]>
+  /**
+   * Writes a scheduler directly into Redis, bypassing this app's own
+   * reconciliation entirely — simulating either a stale concierge-owned
+   * scheduler left behind by a job that was since deleted from source, or a
+   * foreign BullMQ repeatable job some other system installed on the same
+   * queue.
+   */
+  injectOrphanScheduler: (queue: string, id: string) => Promise<void>
+  /**
+   * Kills the current process and boots a fresh one with the same start
+   * options, so a caller can observe what boot-time reconciliation does on a
+   * SECOND boot. Deliberately picks a new random port rather than reusing the
+   * old one — the OS does not always release a killed process's port
+   * instantly, and the two-process bullmq-recovery scenario in
+   * shutdown.test.ts made the same call for the same reason.
+   */
+  restart: () => Promise<void>
+  /**
+   * Waits until `jobName`'s log carries `ticks` distinct `ctx.cron.tick`
+   * values, then returns the total number of RUNS logged (not the number of
+   * distinct ticks) — the figure the "bounded runs per tick" assertion needs.
+   */
+  countRunsOverTicks: (jobName: string, ticks: number, timeoutMs?: number) => Promise<number>
+  /**
+   * Waits until `opts.attempts` runs of `jobName` have been logged, in order,
+   * and returns their `ctx.cron.tick` values in the order logged.
+   */
+  collectTicks: (jobName: string, opts: { attempts: number, timeoutMs?: number }) => Promise<number[]>
+}
+
+/**
+ * A richer `spawnApp` for cron scenarios: bullmq-only (the memory driver
+ * cannot run role `worker` at all, and its scheduling is single-process by
+ * construction, so it cannot exercise "two processes, one Redis" in the first
+ * place), and returns a handle carrying scheduler-introspection and
+ * retry-observing methods alongside the base process controls.
+ */
+export const startApp = async (opts: StartAppOptions = {}): Promise<CronAppHandle> => {
+  const logPath = opts.logPath ?? join(tmpdir(), `concierge-cron-${randomUUID()}.log`)
+  // Only create/truncate when the caller did not supply an existing path —
+  // truncating a shared logPath here would wipe out whatever the first
+  // process already wrote before the second one started.
+  if (!opts.logPath) writeFileSync(logPath, '')
+
+  // Named distinctly from the top-of-file `spawn` import (node:child_process)
+  // this whole harness otherwise uses, so nothing here shadows it.
+  const launch = () => spawnApp({
+    role: opts.role ?? 'worker',
+    driver: 'bullmq',
+    logPath,
+    failFirstAttempt: opts.failFirstAttempt,
+    // The one caller that WANTS the playground's schedules live. Every other
+    // scenario leaves them off, so the digest cannot append to a log it is
+    // not part of — see SpawnOptions.cronEnabled.
+    cronEnabled: true,
+  })
+
+  let inner = await launch()
+  await waitForReady(inner)
+
+  const handle: CronAppHandle = {
+    get proc() { return inner.proc },
+    get port() { return inner.port },
+    logPath,
+    stop: () => inner.stop(),
+    getStdout: () => inner.getStdout(),
+    getStderr: () => inner.getStderr(),
+
+    listSchedulers: async (queue) => withQueue(queue, async (q) => {
+      const found = await q.getJobSchedulers()
+      return found.map(j => ({ id: j.key, jobName: j.name }))
+    }),
+
+    injectOrphanScheduler: async (queue, id) => withQueue(queue, async (q) => {
+      // Far in the future (once a year) so it is never a candidate to
+      // actually fire during a test's own lifetime — these scenarios only
+      // assert on the schedulers LIST, never on a job this orphan produces.
+      await q.upsertJobScheduler(id, { pattern: '0 0 1 1 *', tz: 'UTC' }, { name: 'orphan-job', data: {} })
+    }),
+
+    restart: async () => {
+      inner.stop()
+      await waitForExit(inner, 20_000)
+      inner = await launch()
+      await waitForReady(inner)
+    },
+
+    countRunsOverTicks: async (jobName, ticks, timeoutMs = 190_000) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const lines = readHeartbeatLog(handle).filter(l => l.name === jobName)
+        if (new Set(lines.map(l => l.tick)).size >= ticks) return lines.length
+        await new Promise(r => setTimeout(r, 250))
+      }
+      throw new Error(`did not observe ${ticks} distinct ticks for "${jobName}" within ${timeoutMs}ms`)
+    },
+
+    collectTicks: async (jobName, { attempts, timeoutMs = 90_000 }) => {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const lines = readHeartbeatLog(handle).filter(l => l.name === jobName)
+        if (lines.length >= attempts) return lines.slice(0, attempts).map(l => l.tick!)
+        await new Promise(r => setTimeout(r, 100))
+      }
+      throw new Error(`did not observe ${attempts} attempt(s) for "${jobName}" within ${timeoutMs}ms`)
+    },
+  }
+
+  return handle
+}
+
+/** Stops the process and removes its log file, matching `cleanup` above. */
+export const stopApp = (app: CronAppHandle): void => cleanup(app)

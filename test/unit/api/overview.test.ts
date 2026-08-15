@@ -26,6 +26,7 @@ const fakeSupervisor = (over: Partial<{
    * `Promise.all` (and so the whole `/overview` response) down.
    */
   rejectOnRead: boolean
+  schedulable: boolean
 }> = {}) => ({
   getState: () => over.state ?? 'running',
   config: {
@@ -52,6 +53,14 @@ const fakeSupervisor = (over: Partial<{
           list: async () => ({ items: [], total: 0 }),
           get: async () => undefined,
           retry: async () => {},
+        }
+      : undefined,
+    // Presence IS the capability, mirroring how `introspect` is faked above.
+    schedule: (over.schedulable ?? true)
+      ? {
+          upsert: async () => {},
+          list: async () => [],
+          remove: async () => {},
         }
       : undefined,
     workers: over.hangOnRead
@@ -146,5 +155,22 @@ describe('buildOverview', () => {
     // off connection-level events), so it is NOT asserted false here — the
     // point of this test is that the response exists at all despite that.
     expect(result.state).toBe('running')
+  })
+})
+
+describe('buildOverview schedulable flag', () => {
+  it('is true for a driver that declares scheduling', async () => {
+    expect((await buildOverview(fakeSupervisor())).schedulable).toBe(true)
+  })
+
+  it('is false for a driver that does not', async () => {
+    // `sync` has no `schedule` at all, and an empty schedule list from such a
+    // driver is indistinguishable from a codebase with no cron jobs — which is
+    // exactly the confident-empty-table lie the flag exists to prevent.
+    expect((await buildOverview(fakeSupervisor({ schedulable: false }))).schedulable).toBe(false)
+  })
+
+  it('is false when there is no supervisor at all', async () => {
+    expect((await buildOverview(undefined)).schedulable).toBe(false)
   })
 })
