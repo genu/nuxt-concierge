@@ -90,12 +90,13 @@ export default defineNuxtModule<ModuleOptions>({
       });
 
       // Every dashboard API route. `method` is `get` for every plain read and
-      // `post` for the one route with a side effect (`jobs-retry`) — a dev
-      // server is reachable from any page a developer happens to visit, so
-      // without a method constraint a bare `GET` to the retry route would
-      // perform the retry too. The four reads have no side effect either way,
-      // but are constrained anyway so the route's contract matches what it
-      // actually does rather than accepting anything.
+      // `post` for the two routes with a side effect (`jobs-retry`,
+      // `schedules-run`) — a dev server is reachable from any page a
+      // developer happens to visit, so without a method constraint a bare
+      // `GET` to either route would perform the retry, or fire the job, too.
+      // The five reads have no side effect either way, but are constrained
+      // anyway so the route's contract matches what it actually does rather
+      // than accepting anything.
       const API_HANDLERS: Record<string, { handler: string; method: "get" | "post" }> = {
         "/_concierge/api/overview": { handler: "./runtime/server/routes/api/overview", method: "get" },
         "/_concierge/api/queues/:queue/jobs": { handler: "./runtime/server/routes/api/jobs-list", method: "get" },
