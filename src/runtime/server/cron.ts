@@ -6,7 +6,7 @@
 // build. Verified by direct execution; do not "tidy" this back.
 import cronParser from 'cron-parser'
 import type { AnyJobDefinition, CronSpec } from './types'
-import type { ScheduleSpec, ScheduleSummary } from './drivers/types'
+import type { DriverScheduling, ScheduleSpec, ScheduleSummary } from './drivers/types'
 import { formatIssuePath } from './validate'
 
 const { parseExpression } = cronParser
@@ -166,5 +166,64 @@ export const validateCronPayloads = async (jobs: AnyJobDefinition[]): Promise<vo
       + `schema — ${detail}. A scheduled job whose payload fails validation dead-letters on `
       + `every tick, because payload validation failures are permanent by design.`,
     )
+  }
+}
+
+export interface ReconcileArgs {
+  schedule: DriverScheduling
+  /** Every scanned job. The full set, never this instance's subset. */
+  jobs: Array<{ name: string, queue: string, cron?: CronSpec }>
+  /** The queues this instance declares. */
+  queues: string[]
+  enabled: boolean
+}
+
+/**
+ * Upsert every declared schedule, then remove every concierge-owned scheduler
+ * that is no longer declared — per queue, at boot, with no coordination
+ * between instances.
+ *
+ * No leader election is needed because tick-uniqueness is a DRIVER guarantee:
+ * `bullmq` keeps one delayed job in flight per scheduler, atomically in Lua,
+ * and `memory` is single-process. A leader would be solving that problem a
+ * second time.
+ *
+ * The accepted cost: during a rolling deploy that changes or removes a `cron`
+ * key, old and new code disagree for the deploy window, so a schedule can miss
+ * at most ONE tick. The prune is idempotent and convergent — a wrong prune
+ * self-heals on the next boot.
+ *
+ * The declared set is computed from the FULL scanned job list, not from the
+ * jobs this instance happens to handle. An instance whose `worker.queues` has
+ * been narrowed sweeps only its own queues, which is self-consistent — but it
+ * means at least one running instance must declare the full queue set, or
+ * schedules on the undeclared queues are never reconciled at all.
+ */
+export const reconcileSchedules = async (
+  { schedule, jobs, queues, enabled }: ReconcileArgs,
+): Promise<void> => {
+  for (const queue of queues) {
+    const declared: ScheduleSpec[] = enabled
+      ? jobs
+          .filter(job => job.cron && job.queue === queue)
+          .map(job => ({
+            id: schedulerIdFor(job.name),
+            jobName: job.name,
+            expression: job.cron!.expression,
+            tz: job.cron!.tz,
+            payload: job.cron!.payload,
+          }))
+      // Disabled runs the sweep with an EMPTY declared set rather than
+      // skipping it, so "off" means off in Redis rather than merely off in
+      // this process.
+      : []
+
+    const { upserts, removals } = planReconciliation({
+      declared,
+      existing: await schedule.list(queue),
+    })
+
+    for (const spec of upserts) await schedule.upsert(queue, spec)
+    for (const id of removals) await schedule.remove(queue, id)
   }
 }

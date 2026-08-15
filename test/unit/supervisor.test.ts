@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import { z } from 'zod'
 import { createSupervisor, resetSupervisor, getDriver } from '../../src/runtime/server/supervisor'
 import type { SupervisorConfig } from '../../src/runtime/server/supervisor'
+import { defineJob } from '../../src/runtime/server/handlers/defineJob'
 
 const workHandler = async () => {}
 
 // Typed explicitly, not inferred: an untyped object literal widens
 // `backoff.type` to `string` (there is nothing here contextually typing it
 // as the `'fixed' | 'exponential'` union `SupervisorConfig` declares), which
-// then fails every `createSupervisor({ ...baseConfig, ... })` call below with
-// a backoff.type mismatch. Annotating `baseConfig` itself keeps that
-// narrowing on every spread/override use, rather than re-asserting it at
-// each call site.
-const baseConfig: SupervisorConfig = {
+// then fails every `baseConfig({ ... })` call below with a backoff.type
+// mismatch. Annotating `defaultConfig` itself keeps that narrowing across
+// every override, rather than re-asserting it at each call site.
+const defaultConfig: SupervisorConfig = {
   role: 'both' as const,
   driver: 'memory' as const,
   connection: {},
@@ -26,7 +27,16 @@ const baseConfig: SupervisorConfig = {
   jobs: [{ name: 'work', queue: 'default', handler: workHandler, run: workHandler }],
   version: 'test-1',
   isProduction: false,
+  cron: { enabled: true },
 }
+
+// A function, not a plain object, so each test can override a top-level field
+// (e.g. `role`, `jobs`) without every other test's overrides bleeding into
+// its neighbours through a shared mutable object.
+const baseConfig = (overrides: Partial<SupervisorConfig> = {}): SupervisorConfig => ({
+  ...defaultConfig,
+  ...overrides,
+})
 
 afterEach(async () => {
   // Real timers first: a test that left fake timers active would otherwise
@@ -38,7 +48,7 @@ afterEach(async () => {
 
 describe('supervisor', () => {
   it('starts in "starting" and reaches "running" after consumers start', async () => {
-    const s = await createSupervisor(baseConfig)
+    const s = await createSupervisor(baseConfig())
     expect(s.getState()).toBe('starting')
 
     await s.startConsumers()
@@ -49,15 +59,14 @@ describe('supervisor', () => {
 
   it('starts one consumer per configured queue under role: worker', async () => {
     const sendHandler = async () => {}
-    const s = await createSupervisor({
-      ...baseConfig,
+    const s = await createSupervisor(baseConfig({
       role: 'worker',
-      worker: { ...baseConfig.worker, queues: { default: 1, mail: 1 } },
+      worker: { ...defaultConfig.worker, queues: { default: 1, mail: 1 } },
       jobs: [
         { name: 'work', queue: 'default', handler: workHandler, run: workHandler },
         { name: 'send', queue: 'mail', handler: sendHandler, run: sendHandler },
       ],
-    })
+    }))
     await s.startConsumers()
 
     expect(s.consumers.size).toBe(2)
@@ -65,7 +74,7 @@ describe('supervisor', () => {
   })
 
   it('starts no consumers under role: web but still exists', async () => {
-    const s = await createSupervisor({ ...baseConfig, role: 'web' })
+    const s = await createSupervisor(baseConfig({ role: 'web' }))
     await s.startConsumers()
 
     expect(s.consumers.size).toBe(0)
@@ -74,20 +83,19 @@ describe('supervisor', () => {
   })
 
   it('throws when a job names a queue absent from the concurrency map', async () => {
-    await expect(createSupervisor({
-      ...baseConfig,
+    await expect(createSupervisor(baseConfig({
       jobs: [{ name: 'orphan', queue: 'nope', handler: workHandler, run: workHandler }],
-    })).rejects.toThrow(/"nope".*worker\.queues/)
+    }))).rejects.toThrow(/"nope".*worker\.queues/)
   })
 
   it('builds a registry from name to queue', async () => {
-    const s = await createSupervisor(baseConfig)
+    const s = await createSupervisor(baseConfig())
     expect(s.registry.get('work')?.queue).toBe('default')
     await s.stop()
   })
 
   it('produces a worker record with the configured role, queues and concurrency', async () => {
-    const s = await createSupervisor(baseConfig)
+    const s = await createSupervisor(baseConfig())
     await s.startConsumers()
 
     const record = s.record()
@@ -105,10 +113,9 @@ describe('supervisor', () => {
     const gate = new Promise<void>((resolve) => { release = resolve })
 
     const gatedHandler = async () => { await gate }
-    const s = await createSupervisor({
-      ...baseConfig,
+    const s = await createSupervisor(baseConfig({
       jobs: [{ name: 'work', queue: 'default', handler: gatedHandler, run: gatedHandler }],
-    })
+    }))
     await s.startConsumers()
 
     await s.driver.enqueue('default', { name: 'work', payload: {} })
@@ -128,10 +135,9 @@ describe('supervisor', () => {
 
   it('writes heartbeats on an interval and deregisters on stop', async () => {
     vi.useFakeTimers()
-    const s = await createSupervisor({
-      ...baseConfig,
-      worker: { ...baseConfig.worker, heartbeatInterval: 1000 },
-    })
+    const s = await createSupervisor(baseConfig({
+      worker: { ...defaultConfig.worker, heartbeatInterval: 1000 },
+    }))
     const beat = vi.spyOn(s.driver, 'heartbeat')
     const gone = vi.spyOn(s.driver, 'deregister')
 
@@ -145,10 +151,9 @@ describe('supervisor', () => {
 
   it('stops writing heartbeats once stopped', async () => {
     vi.useFakeTimers()
-    const s = await createSupervisor({
-      ...baseConfig,
-      worker: { ...baseConfig.worker, heartbeatInterval: 1000 },
-    })
+    const s = await createSupervisor(baseConfig({
+      worker: { ...defaultConfig.worker, heartbeatInterval: 1000 },
+    }))
     const beat = vi.spyOn(s.driver, 'heartbeat')
 
     await s.startConsumers()
@@ -168,10 +173,9 @@ describe('supervisor', () => {
     // after driver.deregister(id) and recreate the worker record with a
     // fresh TTL: the exact phantom-worker case this ordering exists to
     // prevent.
-    const s = await createSupervisor({
-      ...baseConfig,
-      worker: { ...baseConfig.worker, heartbeatInterval: 20 },
-    })
+    const s = await createSupervisor(baseConfig({
+      worker: { ...defaultConfig.worker, heartbeatInterval: 20 },
+    }))
 
     let resolveGate!: () => void
     const gate = new Promise<void>((resolve) => { resolveGate = resolve })
@@ -206,7 +210,7 @@ describe('supervisor', () => {
   })
 
   it('reports state "draining" in the record once draining', async () => {
-    const s = await createSupervisor(baseConfig)
+    const s = await createSupervisor(baseConfig())
     await s.startConsumers()
     s.setState('draining')
 
@@ -215,7 +219,7 @@ describe('supervisor', () => {
   })
 
   it('getDriver() returns the live driver, registry and defaults', async () => {
-    const s = await createSupervisor(baseConfig)
+    const s = await createSupervisor(baseConfig())
 
     const { driver, registry, defaults } = getDriver()
     expect(driver).toBe(s.driver)
@@ -238,7 +242,7 @@ describe('supervisor', () => {
       run: () => { called.push('run') },
     }
 
-    const s = await createSupervisor({ ...baseConfig, jobs: [job] })
+    const s = await createSupervisor(baseConfig({ jobs: [job] }))
     await s.startConsumers()
 
     await s.driver.enqueue('default', { name: 'j', payload: undefined })
@@ -253,5 +257,39 @@ describe('supervisor', () => {
     expect(called).toEqual(['run'])
 
     await s.stop()
+  })
+})
+
+describe('supervisor cron reconciliation', () => {
+  it('reconciles at boot on a worker', async () => {
+    const job = defineJob({ name: 'digest', cron: '0 * * * *', handler: async () => {} })
+    const s = await createSupervisor(baseConfig({ role: 'worker', jobs: [job] }))
+    await s.startConsumers()
+
+    expect((await s.driver.schedule!.list('default')).map(x => x.jobName)).toEqual(['digest'])
+    await s.stop()
+  })
+
+  it('does NOT reconcile on a web-role instance', async () => {
+    // Cron produces work; workers own work. A web instance writing schedules
+    // for queues it does not consume is how a deployment ends up with
+    // schedules nobody runs.
+    const job = defineJob({ name: 'digest', cron: '0 * * * *', handler: async () => {} })
+    const s = await createSupervisor(baseConfig({ role: 'web', jobs: [job] }))
+    await s.startConsumers()
+
+    expect(await s.driver.schedule!.list('default')).toEqual([])
+    await s.stop()
+  })
+
+  it('throws at boot when a cron payload violates its own schema', async () => {
+    const job = defineJob({
+      name: 'digest',
+      input: z.object({ scope: z.string() }),
+      cron: { expression: '0 * * * *', payload: { scope: 1 } },
+      handler: async () => {},
+    })
+    await expect(createSupervisor(baseConfig({ role: 'worker', jobs: [job] })))
+      .rejects.toThrow(/digest/)
   })
 })

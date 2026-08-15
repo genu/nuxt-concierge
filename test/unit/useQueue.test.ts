@@ -21,6 +21,7 @@ const baseConfig = (jobs: SupervisorConfig['jobs']): SupervisorConfig => ({
   jobs,
   version: 'test',
   isProduction: false,
+  cron: { enabled: true },
 })
 
 afterEach(async () => { await resetSupervisor() })

@@ -5,6 +5,7 @@ import {
   CRON_DEFAULT_TZ,
   nextFireTime,
   planReconciliation,
+  reconcileSchedules,
   resolveCron,
   schedulerIdFor,
   validateCronPayloads,
@@ -180,5 +181,74 @@ describe('validateCronPayloads', () => {
     // every job's schema against `undefined` at boot.
     const job = defineJob({ input: z.object({ scope: z.string() }), handler: async () => {} })
     await expect(validateCronPayloads([job])).resolves.toBeUndefined()
+  })
+})
+
+const fakeScheduler = (existing: string[] = []) => {
+  const calls = { upserts: [] as string[], removals: [] as string[] }
+  return {
+    calls,
+    schedule: {
+      upsert: async (_q: string, spec: { id: string }) => { calls.upserts.push(spec.id) },
+      list: async (queue: string) => existing.map(id => ({
+        id, jobName: 'x', queue, expression: '0 * * * *', tz: 'UTC',
+      })),
+      remove: async (_q: string, id: string) => { calls.removals.push(id) },
+    },
+  }
+}
+
+describe('reconcileSchedules', () => {
+  it('upserts declared schedules and prunes undeclared ones', async () => {
+    const fake = fakeScheduler([schedulerIdFor('gone')])
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [{ name: 'live', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } }],
+      queues: ['default'],
+      enabled: true,
+    })
+    expect(fake.calls.upserts).toEqual([schedulerIdFor('live')])
+    expect(fake.calls.removals).toEqual([schedulerIdFor('gone')])
+  })
+
+  it('prunes everything and upserts nothing when disabled', async () => {
+    const fake = fakeScheduler([schedulerIdFor('live')])
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [{ name: 'live', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } }],
+      queues: ['default'],
+      enabled: false,
+    })
+    // Both halves. "No upserts" alone is satisfied by an implementation that
+    // skips reconciliation entirely — which is precisely the behaviour this
+    // option must NOT have, because it would leave stale schedulers producing
+    // jobs against a deployment that believes cron is off.
+    expect(fake.calls.upserts).toEqual([])
+    expect(fake.calls.removals).toEqual([schedulerIdFor('live')])
+  })
+
+  it('only considers jobs targeting the queue being reconciled', async () => {
+    const fake = fakeScheduler()
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [
+        { name: 'a', queue: 'default', cron: { expression: '0 * * * *', tz: 'UTC' } },
+        { name: 'b', queue: 'other', cron: { expression: '0 * * * *', tz: 'UTC' } },
+      ],
+      queues: ['default'],
+      enabled: true,
+    })
+    expect(fake.calls.upserts).toEqual([schedulerIdFor('a')])
+  })
+
+  it('ignores jobs with no cron', async () => {
+    const fake = fakeScheduler()
+    await reconcileSchedules({
+      schedule: fake.schedule,
+      jobs: [{ name: 'plain', queue: 'default' }],
+      queues: ['default'],
+      enabled: true,
+    })
+    expect(fake.calls.upserts).toEqual([])
   })
 })
