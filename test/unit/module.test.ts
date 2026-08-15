@@ -267,18 +267,24 @@ describe('dashboard registration is gated on nuxt.options.dev at build time', ()
     expect(handlers.some(h => h.route?.startsWith('/_concierge/api'))).toBe(true)
   })
 
-  it('constrains the retry route to POST and every other API route to GET', async () => {
+  it('constrains every side-effecting route to POST and every other API route to GET', async () => {
     const nuxt = makeNuxt(true)
     await runWithNuxtContext(nuxt as unknown as Nuxt, () => nuxtConciergeModule({}, nuxt as unknown as Nuxt))
 
     // A dev server is reachable from any page a developer happens to visit —
     // without this, `GET /_concierge/api/queues/:q/jobs/:id/retry` would
-    // perform the retry, a side effect landing from a plain navigation.
-    const retry = handlers.find(h => h.route === '/_concierge/api/queues/:queue/jobs/:id/retry')
-    expect(retry?.method).toBe('post')
+    // perform the retry, and `GET /_concierge/api/schedules/:name/run` would
+    // fire the job, either as a side effect landing from a plain navigation.
+    const writeRoutes = [
+      '/_concierge/api/queues/:queue/jobs/:id/retry',
+      '/_concierge/api/schedules/:name/run',
+    ]
+    for (const route of writeRoutes) {
+      expect(handlers.find(h => h.route === route)?.method).toBe('post')
+    }
 
     const reads = handlers.filter(h =>
-      h.route?.startsWith('/_concierge/api') && h.route !== '/_concierge/api/queues/:queue/jobs/:id/retry',
+      h.route?.startsWith('/_concierge/api') && !writeRoutes.includes(h.route),
     )
     expect(reads.length).toBeGreaterThan(0)
     expect(reads.every(h => h.method === 'get')).toBe(true)

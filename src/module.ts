@@ -102,6 +102,8 @@ export default defineNuxtModule<ModuleOptions>({
         "/_concierge/api/queues/:queue/jobs/:id": { handler: "./runtime/server/routes/api/jobs-detail", method: "get" },
         "/_concierge/api/queues/:queue/jobs/:id/retry": { handler: "./runtime/server/routes/api/jobs-retry", method: "post" },
         "/_concierge/api/registry": { handler: "./runtime/server/routes/api/registry", method: "get" },
+        "/_concierge/api/schedules": { handler: "./runtime/server/routes/api/schedules-list", method: "get" },
+        "/_concierge/api/schedules/:name/run": { handler: "./runtime/server/routes/api/schedules-run", method: "post" },
       };
 
       for (const [route, { handler, method }] of Object.entries(API_HANDLERS)) {
