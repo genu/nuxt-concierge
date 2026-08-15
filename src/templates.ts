@@ -218,7 +218,7 @@ export const buildJobMapDeclaration = (
   // regex would leave the qualifier's absence indistinguishable from a path
   // change, and its absence is the one silent failure mode here: an
   // unresolvable name inside a generated .d.ts is swallowed by skipLibCheck,
-  // making Map[K] an error type and every enqueue payload effectively `any`.
+  // making JobMap[K] an error type and every enqueue payload effectively `any`.
   typesModule: string = createResolver(
     import.meta.url
   ).resolve("./runtime/server/types")

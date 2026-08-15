@@ -21,7 +21,7 @@ describe('buildJobMapDeclaration', () => {
   // `import("<typesModule>").` qualifier were silently dropped — and that
   // qualifier's absence is the one silent failure mode here: an unresolvable
   // name inside a generated `.d.ts` is swallowed by `skipLibCheck`, turning
-  // `Map[K]` into an error type and every `enqueue` payload into effectively
+  // `JobMap[K]` into an error type and every `enqueue` payload into effectively
   // `any`, with no error anywhere. Disjoint substrings would also miss a
   // generator that swapped two jobs' values, since each half would still be
   // present somewhere in the output; asserting the full line per job, with
