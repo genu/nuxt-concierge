@@ -278,7 +278,7 @@ A payload that fails schema validation is **never** retried — it would fail id
 (The execution it fails in still counts as an attempt — validation runs inside the handler
 wrapper, so attempt 1 is spent; attempts 2 and 3 are what get skipped.)
 
-`attempts` must be at least `1`. Nothing validates this: `attempts: 0` is not nullish, so it passes through unvalidated and both drivers run the job exactly once — `0` silently means "once", not "never".
+`attempts` counts TOTAL runs including the first, so it must be at least `1`. There is no value meaning "never run". A `0`, a negative or a fraction is rejected at boot — by `defineJob` for a per-job value and by `resolveModuleOptions` for `concierge.defaults.attempts` — rather than coerced, because `attempts: 0` previously survived the fallback to the module default and then ran the job exactly once, silently meaning "once" rather than "never".
 
 > **Handlers must be idempotent.** Delivery is at-least-once and the default is now three attempts, so a handler that charges a card or sends an email can run more than once for the same job. Make the side effect safe to repeat, or guard it with your own idempotency key.
 

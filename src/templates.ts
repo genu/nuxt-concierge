@@ -199,9 +199,9 @@ export default defineConciergePlugin((nitroApp) => {
  *    "Why there is no AST extraction").
  *
  * 3. Each entry is wrapped in `EnqueueInputOf<...>`, not left as the bare
- *    `typeof import(...)["default"]`. `TypedQueue<Map>` (see
- *    src/runtime/server/utils/useQueue.ts) uses `Map[K]` directly as the
- *    `enqueue` payload parameter's type, so `Map[K]` must already BE the
+ *    `typeof import(...)["default"]`. `TypedQueue<JobMap>` (see
+ *    src/runtime/server/utils/useQueue.ts) uses `JobMap[K]` directly as the
+ *    `enqueue` payload parameter's type, so `JobMap[K]` must already BE the
  *    payload type. The bare default-export type is `JobDefinition<In, Out>`
  *    itself (an object with `name`/`queue`/`handler`/`run`), not a payload —
  *    confirmed empirically: without this wrapper, a correct call like
@@ -218,7 +218,7 @@ export const buildJobMapDeclaration = (
   // regex would leave the qualifier's absence indistinguishable from a path
   // change, and its absence is the one silent failure mode here: an
   // unresolvable name inside a generated .d.ts is swallowed by skipLibCheck,
-  // making Map[K] an error type and every enqueue payload effectively `any`.
+  // making JobMap[K] an error type and every enqueue payload effectively `any`.
   typesModule: string = createResolver(
     import.meta.url
   ).resolve("./runtime/server/types")
@@ -292,7 +292,7 @@ export const createTemplateType = (jobs: ScannedJob[] = []) => {
   // `useQueue` is declared as TypedQueue<ConciergeJobMap> rather than as
   // `typeof import(...).useQueue`: the runtime signature is deliberately
   // loose (there is no map at runtime, only the supervisor's registry), and
-  // `TypedQueue<Map>` itself — the generic surface — is imported from the
+  // `TypedQueue<JobMap>` itself — the generic surface — is imported from the
   // source file rather than redeclared here, so ITS shape cannot drift from
   // useQueue.ts. This does NOT guarantee `useQueue`'s own signature can't
   // drift: this declaration hardcodes `() => TypedQueue<ConciergeJobMap>`

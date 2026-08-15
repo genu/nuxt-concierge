@@ -1,5 +1,6 @@
 import defu from 'defu'
 import type { BackoffOptions, Role } from './runtime/server/types'
+import { validateAttempts } from './runtime/server/validate'
 
 export type DriverName = 'auto' | 'sync' | 'memory' | 'bullmq'
 
@@ -184,6 +185,7 @@ export const resolveModuleOptions = (options: ModuleOptions): ResolvedConciergeO
   const merged = defu(options, moduleDefaults) as ResolvedConciergeOptions
 
   validateHistoryLimit(merged.memory.historyLimit)
+  validateAttempts(merged.defaults.attempts, 'concierge.defaults.attempts')
 
   return {
     ...merged,

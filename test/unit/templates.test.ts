@@ -5,7 +5,7 @@ describe('buildJobMapDeclaration', () => {
   // NOTE: deviates from the brief's literal Step 1 assertions. The brief's
   // given text expects a bare `typeof import(...)["default"]` value with no
   // wrapper — that is the job's raw `JobDefinition`, not its payload, and
-  // `TypedQueue<Map>` uses `Map[K]` directly as the `enqueue` payload
+  // `TypedQueue<JobMap>` uses `JobMap[K]` directly as the `enqueue` payload
   // parameter's type. Followed literally, that produced a real TS2353 in the
   // playground on a CORRECT call (`enqueue('slow', { seq, durationMs })`),
   // not merely on the deliberate errors Steps 8/9 introduce. Wrapping each
@@ -21,7 +21,7 @@ describe('buildJobMapDeclaration', () => {
   // `import("<typesModule>").` qualifier were silently dropped — and that
   // qualifier's absence is the one silent failure mode here: an unresolvable
   // name inside a generated `.d.ts` is swallowed by `skipLibCheck`, turning
-  // `Map[K]` into an error type and every `enqueue` payload into effectively
+  // `JobMap[K]` into an error type and every `enqueue` payload into effectively
   // `any`, with no error anywhere. Disjoint substrings would also miss a
   // generator that swapped two jobs' values, since each half would still be
   // present somewhere in the output; asserting the full line per job, with
