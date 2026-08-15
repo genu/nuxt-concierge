@@ -489,6 +489,13 @@ export const waitForLogCount = async (app: AppHandle, count: number, timeoutMs =
     await new Promise(r => setTimeout(r, 25))
   }
 
+  // One last look before giving up. The loop checks, sleeps 25ms, then re-tests
+  // the deadline — so a line written during that final sleep is never seen, and
+  // the wait reports a timeout for work that actually finished. A false timeout
+  // is a flaky CI failure, which is the exact thing this harness has been
+  // hardened against elsewhere.
+  if (readLog(app).length >= count) return
+
   throw new Error(`log did not reach ${count} lines within ${timeoutMs}ms`)
 }
 
@@ -531,6 +538,10 @@ export const waitForCompletedJobs = async (
     if (distinct() >= count) return
     await new Promise(r => setTimeout(r, 25))
   }
+
+  // Same final look as `waitForLogCount`, for the same reason: a job completing
+  // during the last 25ms sleep would otherwise be reported as a timeout.
+  if (distinct() >= count) return
 
   throw new Error(
     `only ${distinct()} distinct job(s) completed within ${timeoutMs}ms, expected ${count}`,
