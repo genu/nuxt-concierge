@@ -3,7 +3,11 @@ import { writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { namespaceRedisUrl, readLog, type AppHandle } from '../lifecycle/harness'
+import type { ChildProcess } from 'node:child_process'
+import {
+  namespaceRedisUrl, readLog, waitForActiveCount, waitForExit, waitForReady,
+  type AppHandle,
+} from '../lifecycle/harness'
 
 describe('the lifecycle suite builds the playground exactly once', () => {
   it('has no per-file build in any lifecycle test', () => {
@@ -105,6 +109,84 @@ describe('readLog', () => {
     expect(() => readLog(app)).toThrow()
 
     rmSync(app.logPath)
+  })
+})
+
+describe('the waits report an early exit with enough evidence to diagnose it', () => {
+  /**
+   * A handle whose process is already gone. Every wait below checks liveness
+   * BEFORE its first fetch, so nothing here touches the network and `port`
+   * never has to be real.
+   */
+  const deadApp = (proc: Partial<ChildProcess>, stdout = '', stderr = ''): AppHandle => ({
+    proc: { exitCode: null, signalCode: null, ...proc } as ChildProcess,
+    port: 1,
+    logPath: '',
+    stop: () => {},
+    getStdout: () => stdout,
+    getStderr: () => stderr,
+  })
+
+  it('attaches the child stdout and stderr, which die with the process otherwise', async () => {
+    // The whole reason issue #23 could not be resolved from its one
+    // observation: the error was a bare exit code, and by the time anyone read
+    // it the process that could have explained it was gone.
+    const app = deadApp(
+      { exitCode: 0 },
+      'Listening on http://[::]:3901\n[nuxt-concierge] Workers drained cleanly',
+      'some stderr line',
+    )
+
+    await expect(waitForActiveCount(app, 5)).rejects.toThrow(/Workers drained cleanly/)
+    await expect(waitForActiveCount(app, 5)).rejects.toThrow(/some stderr line/)
+  })
+
+  it('names what it was waiting for, so the error is not ambiguous between the waits', async () => {
+    const app = deadApp({ exitCode: 0 })
+
+    await expect(waitForActiveCount(app, 5)).rejects.toThrow(/activeCount to reach 5/)
+    await expect(waitForReady(app)).rejects.toThrow(/health endpoint to become ready/)
+  })
+
+  it('explains that code 0 specifically means "it was signalled"', async () => {
+    // Not a generic "died" code: the only route to 0 in the built output is
+    // the graceful-shutdown path, so 0 during a scenario that has not
+    // signalled yet points at the signal's SOURCE, not at the drain.
+    await expect(waitForActiveCount(deadApp({ exitCode: 0 }), 5))
+      .rejects.toThrow(/GRACEFUL SHUTDOWN/)
+  })
+
+  it('does not claim a graceful shutdown for any other exit code', async () => {
+    await expect(waitForActiveCount(deadApp({ exitCode: 1 }), 5))
+      .rejects.not.toThrow(/GRACEFUL SHUTDOWN/)
+  })
+
+  it('resolves waitForExit for a process that already died by signal', async () => {
+    // waitForExit is the one wait that resolves off an event rather than a
+    // poll, so the signal blind spot bites differently there: `once('exit')`
+    // registered after the event already fired never fires at all, and the
+    // call hangs to its timeout reporting "process did not exit in time"
+    // about a process that exited long ago. Asserting `once` was never reached
+    // is what pins that — a resolved promise alone would not distinguish the
+    // early return from a listener that happened to fire.
+    const once = vi.fn()
+    const app = deadApp({ exitCode: null, signalCode: 'SIGKILL', once: once as never })
+
+    await expect(waitForExit(app, 5_000)).resolves.toBeNull()
+    expect(once).not.toHaveBeenCalled()
+  })
+
+  it('fails immediately on a signal death instead of spinning out the full timeout', async () => {
+    // Node reports a signalled process as `exitCode: null`, so a liveness
+    // check that only looks at exitCode sees a DEAD process as alive. The
+    // wait then runs to its deadline and reports "activeCount did not reach
+    // N" — a timeout, for a process that crashed seconds earlier, which sends
+    // the reader to the driver instead of to the crash.
+    const app = deadApp({ exitCode: null, signalCode: 'SIGKILL' })
+
+    const started = Date.now()
+    await expect(waitForActiveCount(app, 5, 5_000)).rejects.toThrow(/exited early on signal SIGKILL/)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })
 

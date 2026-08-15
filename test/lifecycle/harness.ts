@@ -72,12 +72,20 @@ const OUTPUT = 'playground/.output/server/index.mjs'
 const spawned = new Set<ChildProcess>()
 
 /**
- * The subset of `spawned` that was launched with `detached: true`
- * (`spawnDevApp` only — see its doc comment). For these, a plain
- * `proc.kill()` only reaches the immediate `pnpm` process, not the `nuxi`
- * child it forks, so this belt-and-braces sweep must also signal the
- * negated pid to reach the whole process group, exactly like their own
- * `stop()` does.
+ * The subset of `spawned` whose WHOLE PROCESS GROUP has to be signalled, not
+ * just the immediate child (`spawnDevApp` only — see its doc comment). For
+ * these, a plain `proc.kill()` only reaches the immediate `pnpm` process, not
+ * the `nuxi` child it forks, so this belt-and-braces sweep must also signal the
+ * negated pid to reach the whole process group, exactly like their own `stop()`
+ * does.
+ *
+ * `spawnApp` is deliberately NOT a member even though it is also spawned
+ * `detached: true` (for signal isolation — see its doc comment). It spawns the
+ * built output directly and that process forks nothing, so `proc.kill()` already
+ * reaches everything there is to reach, and it does so through node's own handle
+ * — which is a no-op once the child has been reaped, where a raw
+ * `process.kill(-pid)` on a recycled pid would signal whatever group now owns
+ * that number.
  */
 const detachedGroups = new Set<ChildProcess>()
 
@@ -95,9 +103,71 @@ const killAll = () => {
 
 process.on('exit', killAll)
 
+/**
+ * `process.on('exit')` above is NOT sufficient on its own, and specifically not
+ * since `spawnApp` became `detached: true`.
+ *
+ * Node runs `exit` handlers only on a normal exit. A SIGINT or SIGTERM with no
+ * listener terminates the process by default action instead, and this module
+ * runs inside a VITEST WORKER FORK, which installs no SIGINT handler at all and
+ * a SIGTERM one only when profiling execArgv are present (verified in vitest's
+ * own `init-forks` chunk). So a Ctrl-C or a CI cancellation kills the worker
+ * outright and `killAll` never runs.
+ *
+ * That used to cost nothing: the same group signal reached the spawned apps
+ * directly, and they died with the runner. `detached: true` is precisely what
+ * stops that from happening now, so the reaping the group signal used to do for
+ * free has to be done here explicitly, or every interrupted run leaks a worker
+ * process into the next one.
+ *
+ * Re-raises after reaping rather than calling `process.exit()`: restoring the
+ * default disposition and re-signalling makes the runner die exactly the way it
+ * would have without this handler, so nothing here changes the exit status
+ * vitest reports.
+ */
+const reapOnSignal = (signal: NodeJS.Signals) => {
+  const handler = () => {
+    killAll()
+    process.off(signal, handler)
+    process.kill(process.pid, signal)
+  }
+  process.on(signal, handler)
+}
+
+reapOnSignal('SIGINT')
+reapOnSignal('SIGTERM')
+
 /** Exposed so a test file's own `afterAll` can also invoke it as a belt-and-braces sweep. */
 export const killAllSpawned = killAll
 
+/**
+ * Spawns the built production output as a real, separate OS process.
+ *
+ * `detached: true` here is about SIGNAL ISOLATION, not about reaching forked
+ * children the way `spawnDevApp`'s is — the built output forks nothing. Without
+ * it the app lands in the TEST RUNNER's process group, so any group-directed
+ * signal (a Ctrl-C, an IDE/CI stop button, `kill -TERM -<pgid>`) reaches every
+ * app this harness has spawned at once. Each one then does exactly what it is
+ * built to do: drains cleanly and exits 0 — mid-scenario, with nothing in the
+ * test having signalled it.
+ *
+ * That is not hypothetical. It is the mechanism behind issue #23's
+ * `app exited early with code 0` inside `waitForActiveCount`, and it was
+ * reproduced verbatim: the ONLY route to exit code 0 in the built artifact is
+ * http-graceful-shutdown's `process.exit(failed ? 1 : 0)`, which runs only
+ * after a SIGTERM/SIGINT (every other `process.exit` in that bundle is 1, 130
+ * or 143). A process that merely fails to boot does NOT exit 0 — a listen
+ * EADDRINUSE, for instance, is swallowed by nitro's `trapUnhandledNodeErrors`
+ * and the process stays up indefinitely. So code 0 always means "it was
+ * signalled", and `setsid()` is what puts these processes out of reach of
+ * signals this harness did not aim at them specifically.
+ *
+ * The cost is real and is paid for explicitly: a group signal no longer reaps
+ * these for free, so `reapOnSignal` above installs the SIGINT/SIGTERM handlers
+ * that do it instead. Without those this change would trade a rare flake for a
+ * guaranteed leak on every interrupted run — see that function's doc comment.
+ * A SIGKILLed runner still leaks, but it always did: nothing runs on SIGKILL.
+ */
 export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
   const port = opts.port ?? 3100 + Math.floor(Math.random() * 400)
   const logPath = opts.logPath ?? join(tmpdir(), `concierge-${randomUUID()}.log`)
@@ -151,6 +221,8 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       VITEST: undefined,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Signal isolation — see the doc comment above.
+    detached: true,
   })
 
   spawned.add(proc)
@@ -171,6 +243,12 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
     proc,
     port,
     logPath,
+    // Unchanged by `detached: true`, and deliberately so: this process forks
+    // nothing, so `proc.kill()` already reaches everything there is to reach,
+    // and it goes through node's own handle rather than a raw
+    // `process.kill(-pid)` syscall that a recycled pid could misdirect. Same
+    // reason `spawnApp` is not a `detachedGroups` member — see that set's
+    // doc comment.
     stop: () => { try { proc.kill('SIGKILL') } catch { /* already gone */ } },
     getStdout: () => stdout,
     getStderr: () => stderr,
@@ -248,7 +326,26 @@ export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle
   // sweep would fall through to a plain `proc.kill()` on just the `pnpm`
   // wrapper and leave the forked `nuxi` child (and the port) behind.
   detachedGroups.add(proc)
-  proc.once('exit', () => { spawned.delete(proc); detachedGroups.delete(proc) })
+  // Reaps the GROUP here, not just the handle's bookkeeping. A process group
+  // outlives its leader, so if the `pnpm` wrapper exits before the `nuxi` child
+  // it forked, the two deletes below hand the sweep an empty set while that
+  // child is still running and still holding the port. `killAll` iterates
+  // `spawned`, so once this handler has run there is nothing left for it to
+  // find — the leak would survive every later cleanup, including the
+  // SIGINT/SIGTERM one, and land in the NEXT run as a stray process on a port
+  // this suite wants.
+  //
+  // Killing here rather than retaining the pgid for the sweep to signal later
+  // is deliberate: a pid cannot be recycled while it is still in use as a
+  // process-group id, so `-proc.pid` is unambiguous at exactly this moment and
+  // stops being so afterwards. Retained state would have to re-check liveness
+  // before every use to avoid signalling whatever group later owns the number.
+  proc.once('exit', () => {
+    try { if (proc.pid) process.kill(-proc.pid, 'SIGKILL') }
+    catch { /* group already empty */ }
+    spawned.delete(proc)
+    detachedGroups.delete(proc)
+  })
 
   let stdout = ''
   let stderr = ''
@@ -265,6 +362,11 @@ export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle
     proc,
     port,
     logPath,
+    // Deliberately NOT gated on `detachedGroups` membership the way `killAll`'s
+    // sweep is. That set is pruned by the `once('exit')` handler above, so
+    // gating here would fall through to `proc.kill()` on an already-reaped
+    // `pnpm` wrapper — a no-op — while the `nuxi` child it forked kept the
+    // port. The handler above closes that same hole from the other side.
     stop: () => {
       try {
         if (proc.pid) process.kill(-proc.pid, 'SIGKILL')
@@ -277,6 +379,64 @@ export const spawnDevApp = async (opts: SpawnDevOptions = {}): Promise<AppHandle
   }
 }
 
+/** How much of the child's output an early-exit error carries. */
+const OUTPUT_TAIL_LINES = 25
+
+const tail = (output: string): string => {
+  const lines = output.trimEnd().split('\n')
+  const shown = lines.slice(-OUTPUT_TAIL_LINES).join('\n')
+  return shown.trim() ? shown : '(nothing)'
+}
+
+/**
+ * True when the process is gone for ANY reason, not just a normal exit.
+ *
+ * Checking `exitCode !== null` alone — which is all these waits used to do —
+ * silently misses every signal death: Node reports a signalled process as
+ * `exitCode: null`, `signalCode: 'SIGKILL'`. Such a process therefore looked
+ * ALIVE to the poll loop, which then spun out its full timeout and reported
+ * "activeCount did not reach N" — a timeout, for a process that had crashed
+ * seconds earlier. Diagnosing that error sends you to the driver and the
+ * dispatch path; the actual fault was that the process was dead.
+ */
+const exitedEarly = (app: AppHandle): boolean =>
+  app.proc.exitCode !== null || app.proc.signalCode !== null
+
+/**
+ * The single place an unexpected early exit becomes an error.
+ *
+ * It carries the child's own output because without it this error is
+ * undiagnosable after the fact: the process is gone, its stdout/stderr die
+ * with the handle, and all that survives into CI or a scrollback is a bare
+ * exit code. That is precisely what happened in issue #23 — a single
+ * `app exited early with code 0`, no evidence attached, and consequently no
+ * way to tell a drain bug apart from a stray signal without re-observing it.
+ *
+ * The hint on code 0 is the conclusion of that investigation, put where the
+ * next person to hit this will actually read it: exit 0 is not a generic
+ * "died" code here, it is specifically the graceful-shutdown path, and the
+ * tail below will corroborate it with the driver's own
+ * "Workers drained cleanly" line.
+ */
+const earlyExitError = (app: AppHandle, waitingFor: string): Error => {
+  const { exitCode, signalCode } = app.proc
+  const how = signalCode ? `on signal ${signalCode}` : `with code ${exitCode}`
+
+  const hint = exitCode === 0
+    ? '\nAn exit code of 0 means the process completed a GRACEFUL SHUTDOWN: the only '
+      + 'route to code 0 in the built output is http-graceful-shutdown\'s '
+      + '`process.exit(failed ? 1 : 0)`, which runs only after a SIGTERM/SIGINT. If this '
+      + 'scenario had not signalled it yet, something outside the test did — check for a '
+      + 'signal aimed at the process group rather than looking for a bug in the drain.\n'
+    : ''
+
+  return new Error(
+    `app exited early ${how} while waiting for ${waitingFor}.\n${hint}`
+    + `--- app stdout (last ${OUTPUT_TAIL_LINES} lines) ---\n${tail(app.getStdout())}\n`
+    + `--- app stderr (last ${OUTPUT_TAIL_LINES} lines) ---\n${tail(app.getStderr())}`,
+  )
+}
+
 /**
  * Polls the health endpoint rather than sleeping a fixed duration. Fixed sleeps
  * are how lifecycle tests become flaky, and a flaky lifecycle test gets skipped,
@@ -286,9 +446,7 @@ export const waitForReady = async (app: AppHandle, timeoutMs = 30_000): Promise<
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    if (app.proc.exitCode !== null) {
-      throw new Error(`app exited early with code ${app.proc.exitCode}`)
-    }
+    if (exitedEarly(app)) throw earlyExitError(app, 'the health endpoint to become ready')
     try {
       const res = await fetch(`http://127.0.0.1:${app.port}/_concierge/health`)
       if (res.status === 200) return
@@ -318,9 +476,7 @@ export const waitForActiveCount = async (
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    if (app.proc.exitCode !== null) {
-      throw new Error(`app exited early with code ${app.proc.exitCode}`)
-    }
+    if (exitedEarly(app)) throw earlyExitError(app, `activeCount to reach ${count}`)
     try {
       const res = await fetch(`http://127.0.0.1:${app.port}/_concierge/health`)
       if (res.status === 200) {
@@ -548,9 +704,21 @@ export const waitForCompletedJobs = async (
   )
 }
 
+/**
+ * The already-exited check uses `exitedEarly`, not a bare `exitCode !== null`,
+ * for a reason specific to this function: it is the ONE wait here that resolves
+ * off an event rather than a poll. `once('exit')` registered after the event has
+ * already fired never fires, so for a process that died by SIGNAL before this
+ * was called — `exitCode` still `null`, `signalCode` set, `exit` long since
+ * emitted — the bare check falls through to a listener that can never resolve
+ * and the whole thing sits until the timeout, then reports "process did not exit
+ * in time" about a process that exited ages ago. Resolving `exitCode` (i.e.
+ * `null`) matches exactly what the `exit` listener below would have handed back
+ * for a signal death, so callers see no difference.
+ */
 export const waitForExit = (app: AppHandle, timeoutMs = 40_000): Promise<number | null> =>
   new Promise((resolve, reject) => {
-    if (app.proc.exitCode !== null) return resolve(app.proc.exitCode)
+    if (exitedEarly(app)) return resolve(app.proc.exitCode)
     const timer = setTimeout(() => reject(new Error('process did not exit in time')), timeoutMs)
     app.proc.once('exit', (code) => { clearTimeout(timer); resolve(code) })
   })

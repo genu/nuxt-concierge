@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnDevApp, waitForReady, readLog, waitForLogCount, cleanup, killAllSpawned, type AppHandle } from './harness'
+import { execFileSync } from 'node:child_process'
+import { spawnDevApp, waitForReady, waitForExit, readLog, waitForLogCount, cleanup, killAllSpawned, type AppHandle } from './harness'
 
 /**
  * The ONLY end-to-end coverage of the dashboard, and necessarily against a dev
@@ -112,4 +113,57 @@ describe('the dev dashboard', () => {
     // log unchanged forever, and this would time out rather than pass.
     await waitForLogCount(app, beforeCount + 1, 30_000)
   }, 90_000)
+})
+
+/**
+ * Lives in this file because it is the only one that spawns a dev app, and
+ * `spawnDevApp` is the only spawner whose child forks further children — the
+ * single reason any of this process-group machinery exists.
+ */
+describe('dev app process-group reaping', () => {
+  /** Every pid currently in process group `pgid`. `ps -eo` rather than `ps -g`: the latter selects by session on GNU procps and by group on BSD, so it means different things on CI than it does locally. */
+  const groupMembers = (pgid: number): number[] =>
+    execFileSync('ps', ['-eo', 'pid=,pgid='], { encoding: 'utf8' })
+      .split('\n')
+      .map(line => line.trim().split(/\s+/).map(Number))
+      .filter(([pid, group]) => group === pgid && Number.isFinite(pid!))
+      .map(([pid]) => pid!)
+
+  it('reaps the forked nuxi child when only the pnpm wrapper dies', async () => {
+    // A process group outlives its leader. `pnpm dev` is a wrapper around
+    // `nuxi`, which forks again, so if the wrapper exits first the group keeps
+    // running — and the handle's `once('exit')` bookkeeping had already
+    // removed it from the set `killAll` sweeps, leaving nothing that could
+    // ever reap it. The child stays up holding the port and lands in the NEXT
+    // run as a stray listener.
+    //
+    // Kills the wrapper pid ALONE (not the negated pid) to reproduce exactly
+    // that shape: everything else in this file, and `stop()` itself, kills the
+    // whole group and so can never exercise it.
+    const app = await spawnDevApp({ driver: 'memory' })
+
+    try {
+      await waitForReady(app, 120_000)
+
+      // Guards against a vacuous pass. If `pnpm` ever stopped forking — exec'd
+      // into `nuxi` instead, say — killing the wrapper would take the whole
+      // tree with it and the port would free with or without the reaping this
+      // asserts. Requiring a second member proves there is really an orphan
+      // for the exit handler to clean up.
+      expect(groupMembers(app.proc.pid!).length).toBeGreaterThan(1)
+
+      app.proc.kill('SIGKILL')
+      await waitForExit(app, 20_000)
+
+      // Nothing left in the group: the handler reaped it on the way out.
+      const deadline = Date.now() + 20_000
+      while (Date.now() < deadline && groupMembers(app.proc.pid!).length > 0) {
+        await new Promise(r => setTimeout(r, 100))
+      }
+      expect(groupMembers(app.proc.pid!)).toEqual([])
+    }
+    finally {
+      cleanup(app)
+    }
+  }, 180_000)
 })
