@@ -23,7 +23,8 @@ import type {
   WorkerOptions,
 } from '../../options'
 
-const logger = consola.create({}).withTag('nuxt-concierge')
+/** Exported so tests can spy on it instead of asserting on console output. */
+export const logger = consola.create({}).withTag('nuxt-concierge')
 
 /**
  * What the producer needs to know about a job in order to enqueue it.

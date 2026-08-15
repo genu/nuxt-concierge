@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { z } from 'zod'
-import { createSupervisor, resetSupervisor, getDriver } from '../../src/runtime/server/supervisor'
+import { createSupervisor, resetSupervisor, getDriver, logger } from '../../src/runtime/server/supervisor'
 import type { SupervisorConfig } from '../../src/runtime/server/supervisor'
 import { defineJob } from '../../src/runtime/server/handlers/defineJob'
 
@@ -291,5 +291,39 @@ describe('supervisor cron reconciliation', () => {
     })
     await expect(createSupervisor(baseConfig({ role: 'worker', jobs: [job] })))
       .rejects.toThrow(/digest/)
+  })
+
+  it('warns when the driver cannot schedule but cron jobs are declared', async () => {
+    // The guard against v1's defect: a cron job that silently never fires.
+    // `sync` has no `schedule` at all, so these jobs will never run — that has
+    // to be loud at boot, because nothing later will say so.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const job = defineJob({ name: 'digest', cron: '0 * * * *', handler: () => {} })
+    const s = await createSupervisor(baseConfig({ driver: 'sync', role: 'worker', jobs: [job] }))
+    await s.startConsumers()
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot schedule'))
+    warn.mockRestore()
+    await s.stop()
+  })
+
+  it('stays silent when the driver cannot schedule and no cron job is declared', async () => {
+    // The other half. Without this, an implementation that warned on every
+    // sync boot would pass the case above and cry wolf at everyone using the
+    // sync driver for tests.
+    //
+    // `mockRestore()`, not just a fresh `vi.spyOn`: `logger` is a shared
+    // module-level singleton across this whole file, so a spy left in place
+    // by the previous test would still be recording that test's "cannot
+    // schedule" call here, and this assertion would fail for a reason that
+    // has nothing to do with this test's own behaviour.
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const job = defineJob({ name: 'plain', handler: () => {} })
+    const s = await createSupervisor(baseConfig({ driver: 'sync', role: 'worker', jobs: [job] }))
+    await s.startConsumers()
+
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('cannot schedule'))
+    warn.mockRestore()
+    await s.stop()
   })
 })
