@@ -65,6 +65,13 @@ for a `default` queue nobody asked for.
   app program, where the nitro-scoped declaration was invisible.
 - Fixed all 12 pre-existing `typecheck` errors and added `typecheck` to CI.
 
+## [2.0.0-alpha.3](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha.2...nuxt-concierge-v2.0.0-alpha.3) (2026-08-15)
+
+
+### 🐛 Bug Fixes
+
+* reject attempts &lt; 1 at boot instead of silently running once ([#30](https://github.com/genu/nuxt-concierge/issues/30)) ([fc9bcac](https://github.com/genu/nuxt-concierge/commit/fc9bcac1ed697691733b9e5fecd823e531711509))
+
 ## [2.0.0-alpha.2](https://github.com/genu/nuxt-concierge/compare/nuxt-concierge-v2.0.0-alpha.1...nuxt-concierge-v2.0.0-alpha.2) (2026-08-15)
 
 
