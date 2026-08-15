@@ -320,3 +320,14 @@ lessons of the spec, because none of them were findable by reading a diff.
   losing the tick-based idempotency key on the path most likely to re-run partly-done work.
   Both are now stored and restored, with a conformance case holding both drivers to it. If a
   future field is added to a queued job, it needs adding in three places, not one.
+
+## Constraint carried forward to whatever ships next
+
+- **No paid dependencies.** BullMQ Pro's groups are the direct answer to global per-key
+  concurrency, and they are ruled out on that basis, not on technical grounds. This matters
+  most for deferred item 1 (execution serialization / `while_executing` / global cron
+  overlap): it has to be a lease this project owns — held for a job's duration, renewed
+  against the holder's liveness, released on crash — which is the distributed-systems work
+  spec 5 declined twice, once for cron reconciliation and once for `while_executing`.
+  Recorded because "just use BullMQ Pro" is the first thing anyone will suggest, and
+  re-arguing it every time is waste.

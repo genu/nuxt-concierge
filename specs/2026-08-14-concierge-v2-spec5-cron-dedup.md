@@ -174,8 +174,15 @@ job from the dashboard. It is only the scheduler-produced ticks that are exempt.
 What exists instead is a recipe with an honest boundary. Give the job a dedicated queue with
 concurrency 1 — no new machinery, `worker.queues` already does this. **But BullMQ's concurrency is
 per `Worker` instance**, so two worker processes at concurrency 1 give you two concurrent runs.
-Sidekiq has the same property; BullMQ Pro's groups are the paid global answer. The docs state the
-recipe and the limit together, because the recipe alone reads as a guarantee it is not.
+Sidekiq has the same property. The docs state the recipe and the limit together, because the
+recipe alone reads as a guarantee it is not.
+
+**BullMQ Pro's groups solve this directly and are ruled out: this project takes no paid
+dependencies.** Recorded here because it is the obvious first suggestion whenever global
+per-key concurrency comes up, and it will be suggested again. Whatever closes deferred item 1
+(execution serialization) has to be a lease this project owns — held for a job's duration,
+renewed against the holder's liveness, released on crash — not a licensed feature. That is
+strictly more work than the alternative, and it is the decision anyway.
 
 **Deduplication has three modes, not one flag.** They are genuinely different guarantees and
 BullMQ implements all three natively, so collapsing them costs users correctness and saves us
