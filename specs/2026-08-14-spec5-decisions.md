@@ -255,3 +255,68 @@ or deduplication again.
   call side by side with the `attempts` forwarding next to each). Recorded here rather than left
   silent, as the project's own convention for exactly this shape of gap (see the debounce-`replace`
   gap above) requires.
+
+## Facts found after the branch was green, in CI and in external review
+
+These landed after the sections above were written. They are the most transferable
+lessons of the spec, because none of them were findable by reading a diff.
+
+- **A playground fixture is shared infrastructure, and an always-on one corrupts every
+  scenario that is not testing it.** `playground/server/jobs/heartbeat-digest.ts` was added
+  for the cron lifecycle scenario with `cron: '* * * * *'`. Every lifecycle scenario spawns
+  with a worker role and passes `CONCIERGE_TEST_LOG`, so the digest reconciled and fired in
+  scenarios with nothing to do with cron, appending its `{ name, tick, tz, attempt }` line to
+  the log they assert on. `summarise` counts distinct `jobId`; the digest line has none;
+  `undefined` became an eleventh key and CI failed on the SIGKILL-recovery scenario with
+  `expected 11 to be 10` — a scenario this spec never touched. Neither the task review nor the
+  whole-branch review caught it, because the fixture is entirely reasonable read on its own.
+  Schedules are now off by default in `spawnApp` (`NUXT_CONCIERGE_CRON_ENABLED`), and
+  `startApp` opts in, so `cron.test.ts` exercises the switch enabled and every other scenario
+  exercises it disabled.
+
+- **Polling a proxy for what you assert lets the assertion pass by luck.** `waitForLogCount`
+  counts LINES, but every caller in `shutdown.test.ts` means "N distinct jobs completed". Any
+  line satisfies it — which is why the digest line let the scenario reach "10 lines" with 9
+  real completions and pass, and why it failed only on a slower runner where the tenth landed
+  first. `waitForCompletedJobs` polls distinct `jobId`s instead. The general rule: **the wait
+  and the assertion must be about the same quantity**, or the wait can be satisfied by
+  something the test is not asserting about. `dashboard.test.ts` deliberately keeps
+  `waitForLogCount`, because a retry appends a second line for the SAME `jobId` — there, "the
+  retry re-ran the job" really is a statement about line count.
+
+- **The shared resource has to assert its own invariant.** `test/lifecycle/isolation.test.ts`
+  encodes the property that was violated: *a freshly spawned app does no work until a scenario
+  asks it to*. It is the slowest test in the suite (~70s, which is what it takes to observe a
+  minute-granularity schedule) and that cost is the point — every faster check is blind to the
+  exact case that shipped. Verified to fail when the always-on default is restored.
+
+- **`setTimeout` silently clamps a delay past ~24.8 days (2^31-1 ms).** A monthly or yearly
+  cron computes a delay beyond that, and Node clamps it to fire almost immediately, then
+  re-arms in a loop. `memory.ts`'s `arm()` chunks waits at `MAX_TIMEOUT_MS`. Found during
+  task 7's unref verification, not by any test.
+
+- **A `.d.ts` grep proves nothing about an inherited API.** This spec asserted that
+  `Queue.getDeduplicationJobId` does not exist in bullmq 5.63.0, having grepped
+  `classes/queue.d.ts` alone; it is declared on `QueueGetters`, which `Queue` extends. The
+  driver shipped a hand-rolled key read before review caught it. Every other "verified against
+  the installed source" claim here was checked by execution — this was the one exception, and
+  it was the one that was wrong.
+
+- **An external reviewer's finding can be right about the problem and wrong about the fix.**
+  Of eight CodeRabbit findings on the PR, six were valid and fixed. One was wrong on the facts
+  (that `cron-parser`'s `next()` can return a time at or before its reference with nonzero
+  milliseconds — tested against 4.9.0 with `.500` and `.999` inputs across per-second and
+  per-minute expressions; strictly after every time, and the reviewer's own embedded research
+  said so). One was right that `bullmq`'s `deduplicated` flag races, but proposed "use an
+  atomic signal from the add operation", which does not exist — `add()` returns the existing
+  `Job` on suppression with nothing distinguishing it. The only genuinely atomic route is
+  supplying custom job ids, which would change every job id from BullMQ's numeric counter to
+  ours, visible in `JobSummary.id`, the dashboard and existing tests. Left documented.
+
+- **`memory`'s `introspect.retry` rebuilds from a `TerminalRecord`, so every field that record
+  does not hold is silently dropped on retry.** `bullmq` keeps everything for free, because
+  `job.retry()` reuses the original job record. `cron` and the dedup id were both being lost,
+  so a dashboard retry of a failed scheduled job handed the handler `ctx.cron === undefined` —
+  losing the tick-based idempotency key on the path most likely to re-run partly-done work.
+  Both are now stored and restored, with a conformance case holding both drivers to it. If a
+  future field is added to a queued job, it needs adding in three places, not one.
