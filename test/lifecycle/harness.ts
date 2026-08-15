@@ -32,6 +32,31 @@ export interface SpawnOptions {
    * behaviour the module itself has no concept of.
    */
   failFirstAttempt?: string
+  /**
+   * Whether the playground's declared cron jobs are scheduled at all.
+   *
+   * **Defaults to `false`, and that default is load-bearing.**
+   * `playground/server/jobs/heartbeat-digest.ts` runs every minute and appends
+   * to `CONCIERGE_TEST_LOG` — the SAME log the scenario that spawned this
+   * process is asserting on. Every scenario here runs a worker role, so
+   * without this the digest reconciles and fires in scenarios that have
+   * nothing to do with cron, and its `{ name, tick, tz, attempt }` line lands
+   * among their `{ jobId, attempt, pid, id }` ones.
+   *
+   * That is not hypothetical: it turned CI's SIGKILL-recovery scenario into
+   * `expected 11 to be 10`, because `summarise` counted the digest line's
+   * absent `jobId` as an eleventh distinct job. It is timing-dependent — the
+   * scenario polls for 10 LINES, so a digest line arriving before the tenth
+   * real completion masks the problem — which is why it passed locally and
+   * failed on a slower runner.
+   *
+   * The log is only the loudest symptom. A digest job firing mid-scenario also
+   * occupies a worker slot and adds queue depth, so `waitForActiveCount` and
+   * drain-timing assertions are exposed to it too.
+   *
+   * `test/lifecycle/cron.test.ts` opts in via `startApp`.
+   */
+  cronEnabled?: boolean
 }
 
 const OUTPUT = 'playground/.output/server/index.mjs'
@@ -107,6 +132,13 @@ export const spawnApp = async (opts: SpawnOptions = {}): Promise<AppHandle> => {
       NUXT_CONCIERGE_DRIVER: opts.driver ?? 'memory',
       NUXT_CONCIERGE_WORKER_SHUTDOWN_TIMEOUT: String(opts.shutdownTimeout ?? 20_000),
       NUXT_CONCIERGE_BULLMQ_STALLED_INTERVAL: String(opts.stalledInterval ?? 1000),
+      // OFF unless the scenario asks for it — see SpawnOptions.cronEnabled.
+      // Same NUXT_ override mechanism as the three above; `concierge.cron.enabled`
+      // -> NUXT_CONCIERGE_CRON_ENABLED. `false` here does not merely skip
+      // scheduling in this process, it reconciles with an empty declared set,
+      // so a schedule left in Redis by an earlier scenario is pruned rather
+      // than inherited.
+      NUXT_CONCIERGE_CRON_ENABLED: String(opts.cronEnabled ?? false),
       // Keep Nitro's own budget above ours so it is not the limiting factor.
       NITRO_SHUTDOWN_TIMEOUT: '25000',
       NODE_ENV: 'production',
@@ -475,7 +507,23 @@ export const cleanup = (app: AppHandle) => {
 /** Distinct job seqs seen, and how many ran more than once. */
 export const summarise = (lines: LogLine[]) => {
   const counts = new Map<number, number>()
-  for (const l of lines) counts.set(l.jobId, (counts.get(l.jobId) ?? 0) + 1)
+  for (const l of lines) {
+    // A line that is not a job-completion record must not be counted as one.
+    // Without this the failure is an off-by-one — `undefined` becomes an extra
+    // key in `completed`, and `pids` gains an extra member — which reads as
+    // "the driver ran one job too many" and sends you looking at the driver.
+    // That is exactly how a cron fixture appending to a shared log turned into
+    // CI's `expected 11 to be 10`. Throwing names the real problem instead.
+    if (typeof l.jobId !== 'number') {
+      throw new Error(
+        `[lifecycle] a non-job line reached summarise(): ${JSON.stringify(l)}. `
+        + `Something other than a job fixture is appending to CONCIERGE_TEST_LOG `
+        + `for this scenario — check whether a schedule is live that should not be `
+        + `(see SpawnOptions.cronEnabled).`,
+      )
+    }
+    counts.set(l.jobId, (counts.get(l.jobId) ?? 0) + 1)
+  }
   return {
     completed: new Set(counts.keys()),
     duplicates: [...counts.entries()].filter(([, n]) => n > 1).length,
@@ -592,6 +640,10 @@ export const startApp = async (opts: StartAppOptions = {}): Promise<CronAppHandl
     driver: 'bullmq',
     logPath,
     failFirstAttempt: opts.failFirstAttempt,
+    // The one caller that WANTS the playground's schedules live. Every other
+    // scenario leaves them off, so the digest cannot append to a log it is
+    // not part of — see SpawnOptions.cronEnabled.
+    cronEnabled: true,
   })
 
   let inner = await launch()
