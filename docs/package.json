@@ -12,7 +12,7 @@
   "devDependencies": {
     "nuxt": "^3.9.1",
     "vue": "^3.4.5",
-    "vue-router": "^4.2.5"
+    "vue-router": "^4.6.4"
   },
   "dependencies": {
     "@iconify-json/heroicons": "^1.1.19",
