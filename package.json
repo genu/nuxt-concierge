@@ -62,8 +62,8 @@
     }
   },
   "dependencies": {
-    "@nuxt/devtools-kit": "3.4.1",
-    "@nuxt/kit": "4.5.2",
+    "@nuxt/devtools-kit": "3.4.3",
+    "@nuxt/kit": "4.6.2",
     "@standard-schema/spec": "1.1.0",
     "bullmq": "5.63.0",
     "consola": "3.4.2",
@@ -74,14 +74,14 @@
     "ioredis": "5.9.0"
   },
   "devDependencies": {
-    "@nuxt/eslint-config": "1.16.0",
+    "@nuxt/eslint-config": "1.17.0",
     "@nuxt/module-builder": "1.0.3",
-    "@nuxt/schema": "4.5.2",
-    "@nuxt/test-utils": "4.1.0",
+    "@nuxt/schema": "4.6.2",
+    "@nuxt/test-utils": "4.3.4",
     "@types/node": "24.10.1",
     "eslint": "9.39.5",
     "eslint-plugin-vitest": "0.5.4",
-    "nuxt": "4.5.2",
+    "nuxt": "4.6.2",
     "typescript": "5.9.3",
     "vitest": "4.1.10",
     "vue-tsc": "3.3.9",
